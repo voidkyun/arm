@@ -1,0 +1,20 @@
+cabal-version: 3.8
+name: arm-core
+version: 0.1.0.0
+synopsis: Core abstractions for Algebra Relational Mapping
+description:
+  Core package boundary for ARM. This package must stay independent from
+  HTTP servers, web adapters, and database interpreters.
+category: Web
+build-type: Simple
+license: NONE
+
+library
+  exposed-modules:
+      Arm.Core
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.18 && <5
+  default-language: GHC2021
+  ghc-options: -Wall

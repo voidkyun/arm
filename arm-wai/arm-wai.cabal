@@ -1,0 +1,21 @@
+cabal-version: 3.8
+name: arm-wai
+version: 0.1.0.0
+synopsis: WAI integration boundary for Algebra Relational Mapping
+description:
+  HTTP adapter package boundary for ARM. Real WAI and Warp integration belongs
+  here, while arm-core remains independent from HTTP dependencies.
+category: Web
+build-type: Simple
+license: NONE
+
+library
+  exposed-modules:
+      Arm.Wai
+  hs-source-dirs:
+      src
+  build-depends:
+      arm-core,
+      base >=4.18 && <5
+  default-language: GHC2021
+  ghc-options: -Wall

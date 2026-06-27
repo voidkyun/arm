@@ -1,0 +1,22 @@
+cabal-version: 3.8
+name: arm-example-task
+version: 0.1.0.0
+synopsis: Task management example for Algebra Relational Mapping
+description:
+  Sample application package boundary for ARM. This package depends on the
+  reusable ARM libraries and must not be required by them.
+category: Web
+build-type: Simple
+license: NONE
+
+executable arm-example-task
+  main-is: Main.hs
+  hs-source-dirs:
+      app
+  build-depends:
+      arm-core,
+      arm-postgresql,
+      arm-wai,
+      base >=4.18 && <5
+  default-language: GHC2021
+  ghc-options: -Wall
