@@ -26,6 +26,8 @@ test-suite arm-core-test
       test
   build-depends:
       arm-core,
-      base >=4.18 && <5
+      base >=4.18 && <5,
+      tasty >=1.5 && <1.6,
+      tasty-quickcheck >=0.10 && <0.12
   default-language: GHC2021
   ghc-options: -Wall
