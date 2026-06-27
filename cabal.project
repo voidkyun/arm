@@ -1,0 +1,5 @@
+packages:
+  arm-core
+  arm-wai
+  arm-postgresql
+  arm-example-task
