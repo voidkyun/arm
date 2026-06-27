@@ -139,13 +139,15 @@ propRawResponseRoundTrip (Label value) =
 
 propApiErrorRoundTrip :: ApiKind -> Label -> Property
 propApiErrorRoundTrip (ApiKind kind) (Label value) =
-  let apiError = ApiError kind value
-   in (apiErrorKind apiError, apiErrorMessage apiError) === (kind, value)
+  (apiErrorKind apiError, apiErrorMessage apiError) === (kind, value)
+  where
+    apiError = ApiError kind value
 
 propDomainErrorRoundTrip :: DomainKind -> Label -> Property
 propDomainErrorRoundTrip (DomainKind kind) (Label value) =
-  let domainError = DomainError kind value
-   in (domainErrorKind domainError, domainErrorMessage domainError) === (kind, value)
+  (domainErrorKind domainError, domainErrorMessage domainError) === (kind, value)
+  where
+    domainError = DomainError kind value
 
 propDomainErrorToApiError :: DomainKind -> Label -> Property
 propDomainErrorToApiError (DomainKind kind) (Label value) =
@@ -162,214 +164,228 @@ propDBCommandRoundTrip (Label value) =
 
 propObservationCarriesEndpointName :: Label -> Property
 propObservationCarriesEndpointName (Label value) =
-  let expectedName = EndpointName value
-      Observation {name = actualName} = minimalObservation expectedName
-   in actualName === expectedName
+  actualName === expectedName
+  where
+    expectedName = EndpointName value
+    Observation {name = actualName} = minimalObservation expectedName
 
 propTransitionCarriesEndpointName :: Label -> Property
 propTransitionCarriesEndpointName (Label value) =
-  let expectedName = EndpointName value
-      Transition {name = actualName} = minimalTransition expectedName
-   in actualName === expectedName
+  actualName === expectedName
+  where
+    expectedName = EndpointName value
+    Transition {name = actualName} = minimalTransition expectedName
 
 propObservationExecutionSucceeds :: Label -> Property
 propObservationExecutionSucceeds (Label value) =
-  let rawRequest = RawRequest value
-      expected =
-        Right
-          ( RawResponse
-              ( value
-                  <> "-query-context-"
-                  <> value
-              )
-          )
-   in runIdentity (executeObservation successfulQuery successfulObservation rawRequest)
-        === expected
+  runIdentity (executeObservation successfulQuery successfulObservation rawRequest)
+    === expected
+  where
+    rawRequest = RawRequest value
+    expected =
+      Right
+        ( RawResponse
+            ( value
+                <> "-query-context-"
+                <> value
+            )
+        )
 
 propObservationDecodeFailure :: Label -> Property
 propObservationDecodeFailure (Label value) =
-  let expected = ApiError ApiParseError value
-      endpoint =
-        Observation
-          { name = EndpointName "decode-failure"
-          , decode = const (Left expected)
-          , buildQuery = \_ -> error "query should not be built after a decode failure"
-          , observe = \_ _ -> error "observe should not run after a decode failure"
-          , encode = \_ -> error "encode should not run after a decode failure"
-          }
-   in runIdentity (executeObservation failIfQueryRuns endpoint (RawRequest value))
-        === Left expected
+  runIdentity (executeObservation failIfQueryRuns endpoint (RawRequest value))
+    === Left expected
+  where
+    expected = ApiError ApiParseError value
+    endpoint =
+      Observation
+        { name = EndpointName "decode-failure"
+        , decode = const (Left expected)
+        , buildQuery = \_ -> error "query should not be built after a decode failure"
+        , observe = \_ _ -> error "observe should not run after a decode failure"
+        , encode = \_ -> error "encode should not run after a decode failure"
+        }
 
 propObservationQueryFailure :: Label -> Property
 propObservationQueryFailure (Label value) =
-  let expected = ApiError ApiUnexpectedInterpreterFailure value
-      endpoint =
-        (minimalObservation (EndpointName "query-failure"))
-          { observe = \_ _ -> error "observe should not run after a query failure"
-          }
-      runQuery _ = Identity (Left expected)
-   in runIdentity (executeObservation runQuery endpoint (RawRequest value))
-        === Left expected
+  runIdentity (executeObservation runQuery endpoint (RawRequest value))
+    === Left expected
+  where
+    expected = ApiError ApiUnexpectedInterpreterFailure value
+    endpoint =
+      (minimalObservation (EndpointName "query-failure"))
+        { observe = \_ _ -> error "observe should not run after a query failure"
+        }
+    runQuery _ = Identity (Left expected)
 
 propObservationDomainFailure :: Label -> Property
 propObservationDomainFailure (Label value) =
-  let domainError = DomainError DomainConflictError value
-      endpoint =
-        (minimalObservation (EndpointName "domain-failure"))
-          { observe = \_ _ -> Left domainError
-          , encode = \_ -> error "encode should not run after a domain failure"
-          }
-   in runIdentity (executeObservation successfulUnitQuery endpoint (RawRequest value))
-        === Left (domainErrorToApiError domainError)
+  runIdentity (executeObservation successfulUnitQuery endpoint (RawRequest value))
+    === Left (domainErrorToApiError domainError)
+  where
+    domainError = DomainError DomainConflictError value
+    endpoint =
+      (minimalObservation (EndpointName "domain-failure"))
+        { observe = \_ _ -> Left domainError
+        , encode = \_ -> error "encode should not run after a domain failure"
+        }
 
 propObservationEncodeFailure :: Label -> Property
 propObservationEncodeFailure (Label value) =
-  let expected = ApiError ApiValidationError value
-      endpoint =
-        Observation
-          { name = EndpointName "encode-failure"
-          , decode = const (Right ())
-          , buildQuery = const (DBQuery "query")
-          , observe = \_ _ -> Right ()
-          , encode = const (Left expected)
-          }
-   in runIdentity (executeObservation successfulUnitQuery endpoint (RawRequest value))
-        === Left expected
+  runIdentity (executeObservation successfulUnitQuery endpoint (RawRequest value))
+    === Left expected
+  where
+    expected = ApiError ApiValidationError value
+    endpoint =
+      Observation
+        { name = EndpointName "encode-failure"
+        , decode = const (Right ())
+        , buildQuery = const (DBQuery "query")
+        , observe = \_ _ -> Right ()
+        , encode = const (Left expected)
+        }
 
 propTransitionExecutionSucceeds :: Label -> Property
 propTransitionExecutionSucceeds (Label value) =
-  let rawRequest = RawRequest value
-      expected =
-        Right
-          ( RawResponse
-              ( value
-                  <> "-query-context-"
-                  <> value
-                  <> "-query-context-"
-                  <> value
-                  <> "-decision-command-result"
-              )
-          )
-   in runIdentity
-        ( executeTransition
-            successfulQuery
-            successfulCommand
-            successfulTransition
-            rawRequest
+  runIdentity
+    ( executeTransition
+        successfulQuery
+        successfulCommand
+        successfulTransition
+        rawRequest
+    )
+    === expected
+  where
+    rawRequest = RawRequest value
+    expected =
+      Right
+        ( RawResponse
+            ( value
+                <> "-query-context-"
+                <> value
+                <> "-query-context-"
+                <> value
+                <> "-decision-command-result"
+            )
         )
-        === expected
 
 propTransitionDecodeFailure :: Label -> Property
 propTransitionDecodeFailure (Label value) =
-  let expected = ApiError ApiParseError value
-      endpoint =
-        Transition
-          { name = EndpointName "decode-failure"
-          , decode = const (Left expected)
-          , buildQuery = \_ -> error "query should not be built after a decode failure"
-          , decide = \_ _ -> error "decide should not run after a decode failure"
-          , buildCommand = \_ -> error "command should not be built after a decode failure"
-          , respond = \_ _ -> error "respond should not run after a decode failure"
-          , encode = \_ -> error "encode should not run after a decode failure"
-          }
-   in runIdentity
-        ( executeTransition
-            failIfQueryRuns
-            failIfCommandRuns
-            endpoint
-            (RawRequest value)
-        )
-        === Left expected
+  runIdentity
+    ( executeTransition
+        failIfQueryRuns
+        failIfCommandRuns
+        endpoint
+        (RawRequest value)
+    )
+    === Left expected
+  where
+    expected = ApiError ApiParseError value
+    endpoint =
+      Transition
+        { name = EndpointName "decode-failure"
+        , decode = const (Left expected)
+        , buildQuery = \_ -> error "query should not be built after a decode failure"
+        , decide = \_ _ -> error "decide should not run after a decode failure"
+        , buildCommand = \_ -> error "command should not be built after a decode failure"
+        , respond = \_ _ -> error "respond should not run after a decode failure"
+        , encode = \_ -> error "encode should not run after a decode failure"
+        }
 
 propTransitionQueryFailure :: Label -> Property
 propTransitionQueryFailure (Label value) =
-  let expected = ApiError ApiUnexpectedInterpreterFailure value
-      endpoint =
-        (minimalTransition (EndpointName "query-failure"))
-          { decide = \_ _ -> error "decide should not run after a query failure"
-          }
-      runQuery _ = Identity (Left expected)
-   in runIdentity
-        ( executeTransition
-            runQuery
-            failIfCommandRuns
-            endpoint
-            (RawRequest value)
-        )
-        === Left expected
+  runIdentity
+    ( executeTransition
+        runQuery
+        failIfCommandRuns
+        endpoint
+        (RawRequest value)
+    )
+    === Left expected
+  where
+    expected = ApiError ApiUnexpectedInterpreterFailure value
+    endpoint =
+      (minimalTransition (EndpointName "query-failure"))
+        { decide = \_ _ -> error "decide should not run after a query failure"
+        }
+    runQuery _ = Identity (Left expected)
 
 propTransitionDecisionFailure :: Label -> Property
 propTransitionDecisionFailure (Label value) =
-  let domainError = DomainError DomainInvariantViolation value
-      endpoint =
-        (minimalTransition (EndpointName "decision-failure"))
-          { decide = \_ _ -> Left domainError
-          , buildCommand = \_ -> error "command should not be built after a decision failure"
-          }
-   in runIdentity
-        ( executeTransition
-            successfulUnitQuery
-            failIfCommandRuns
-            endpoint
-            (RawRequest value)
-        )
-        === Left (domainErrorToApiError domainError)
+  runIdentity
+    ( executeTransition
+        successfulUnitQuery
+        failIfCommandRuns
+        endpoint
+        (RawRequest value)
+    )
+    === Left (domainErrorToApiError domainError)
+  where
+    domainError = DomainError DomainInvariantViolation value
+    endpoint =
+      (minimalTransition (EndpointName "decision-failure"))
+        { decide = \_ _ -> Left domainError
+        , buildCommand = \_ -> error "command should not be built after a decision failure"
+        }
 
 propTransitionCommandFailure :: Label -> Property
 propTransitionCommandFailure (Label value) =
-  let expected = ApiError ApiUnexpectedInterpreterFailure value
-      endpoint =
-        (minimalTransition (EndpointName "command-failure"))
-          { respond = \_ _ -> error "respond should not run after a command failure"
-          }
-      runCommand _ = Identity (Left expected)
-   in runIdentity
-        ( executeTransition
-            successfulUnitQuery
-            runCommand
-            endpoint
-            (RawRequest value)
-        )
-        === Left expected
+  runIdentity
+    ( executeTransition
+        successfulUnitQuery
+        runCommand
+        endpoint
+        (RawRequest value)
+    )
+    === Left expected
+  where
+    expected = ApiError ApiUnexpectedInterpreterFailure value
+    endpoint =
+      (minimalTransition (EndpointName "command-failure"))
+        { respond = \_ _ -> error "respond should not run after a command failure"
+        }
+    runCommand _ = Identity (Left expected)
 
 propTransitionRespondFailure :: Label -> Property
 propTransitionRespondFailure (Label value) =
-  let expected = ApiError ApiConflictError value
-      endpoint =
-        (minimalTransition (EndpointName "respond-failure"))
-          { respond = \_ _ -> Left expected
-          , encode = \_ -> error "encode should not run after a response failure"
-          }
-   in runIdentity
-        ( executeTransition
-            successfulUnitQuery
-            successfulUnitCommand
-            endpoint
-            (RawRequest value)
-        )
-        === Left expected
+  runIdentity
+    ( executeTransition
+        successfulUnitQuery
+        successfulUnitCommand
+        endpoint
+        (RawRequest value)
+    )
+    === Left expected
+  where
+    expected = ApiError ApiConflictError value
+    endpoint =
+      (minimalTransition (EndpointName "respond-failure"))
+        { respond = \_ _ -> Left expected
+        , encode = \_ -> error "encode should not run after a response failure"
+        }
 
 propTransitionEncodeFailure :: Label -> Property
 propTransitionEncodeFailure (Label value) =
-  let expected = ApiError ApiValidationError value
-      endpoint =
-        Transition
-          { name = EndpointName "encode-failure"
-          , decode = const (Right ())
-          , buildQuery = const (DBQuery "query")
-          , decide = \_ _ -> Right ()
-          , buildCommand = const (DBCommand "command")
-          , respond = \_ _ -> Right ()
-          , encode = const (Left expected)
-          }
-   in runIdentity
-        ( executeTransition
-            successfulUnitQuery
-            successfulUnitCommand
-            endpoint
-            (RawRequest value)
-        )
-        === Left expected
+  runIdentity
+    ( executeTransition
+        successfulUnitQuery
+        successfulUnitCommand
+        endpoint
+        (RawRequest value)
+    )
+    === Left expected
+  where
+    expected = ApiError ApiValidationError value
+    endpoint =
+      Transition
+        { name = EndpointName "encode-failure"
+        , decode = const (Right ())
+        , buildQuery = const (DBQuery "query")
+        , decide = \_ _ -> Right ()
+        , buildCommand = const (DBCommand "command")
+        , respond = \_ _ -> Right ()
+        , encode = const (Left expected)
+        }
 
 minimalObservation :: EndpointName -> Observation () () ()
 minimalObservation endpointName =
