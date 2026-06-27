@@ -23,41 +23,106 @@ import Test.Tasty
 import Test.Tasty.QuickCheck
   ( Arbitrary (..)
   , Gen
-  , NonNegative (..)
   , Property
   , choose
-  , counterexample
   , listOf1
   , testProperty
   , (===)
   )
 
-newtype TestInput = TestInput String
+newtype TestInput = TestInput Int
   deriving (Eq, Show)
 
-newtype TestContext = TestContext [String]
+newtype TestContext = TestContext Int
   deriving (Eq, Show)
 
-newtype TestDecision = TestDecision String
+newtype TestDecision = TestDecision Int
   deriving (Eq, Show)
 
 newtype TestResult = TestResult Int
   deriving (Eq, Show)
 
-newtype TestOutput = TestOutput String
+newtype TestOutput = TestOutput Int
   deriving (Eq, Show)
 
-newtype NonEmptyText = NonEmptyText String
+newtype Label = Label String
   deriving (Eq, Show)
 
-instance Arbitrary NonEmptyText where
-  arbitrary = NonEmptyText <$> listOf1 safeChar
+instance Arbitrary Label where
+  arbitrary = Label <$> listOf1 safeChar
 
-newtype NonEmptyTexts = NonEmptyTexts [String]
+instance Arbitrary TestInput where
+  arbitrary = TestInput <$> arbitrary
+
+instance Arbitrary TestContext where
+  arbitrary = TestContext <$> arbitrary
+
+instance Arbitrary TestDecision where
+  arbitrary = TestDecision <$> arbitrary
+
+instance Arbitrary TestResult where
+  arbitrary = TestResult <$> arbitrary
+
+instance Arbitrary TestOutput where
+  arbitrary = TestOutput <$> arbitrary
+
+data ObservationSpec = ObservationSpec
+  { observationSpecName :: EndpointName
+  , observationSpecRaw :: RawRequest
+  , observationSpecInput :: TestInput
+  , observationSpecContext :: TestContext
+  , observationSpecQuery :: DBQuery TestContext
+  , observationSpecOutput :: TestOutput
+  , observationSpecResponse :: RawResponse
+  , observationSpecApiError :: ApiError
+  , observationSpecDomainError :: DomainError
+  }
   deriving (Eq, Show)
 
-instance Arbitrary NonEmptyTexts where
-  arbitrary = NonEmptyTexts <$> listOf1 (listOf1 safeChar)
+instance Arbitrary ObservationSpec where
+  arbitrary =
+    ObservationSpec
+      <$> genEndpointName
+      <*> genRawRequest
+      <*> arbitrary
+      <*> arbitrary
+      <*> genDBQuery
+      <*> arbitrary
+      <*> genRawResponse
+      <*> genApiError
+      <*> genDomainError
+
+data TransitionSpec = TransitionSpec
+  { transitionSpecName :: EndpointName
+  , transitionSpecRaw :: RawRequest
+  , transitionSpecInput :: TestInput
+  , transitionSpecContext :: TestContext
+  , transitionSpecQuery :: DBQuery TestContext
+  , transitionSpecDecision :: TestDecision
+  , transitionSpecCommand :: DBCommand TestResult
+  , transitionSpecResult :: TestResult
+  , transitionSpecOutput :: TestOutput
+  , transitionSpecResponse :: RawResponse
+  , transitionSpecApiError :: ApiError
+  , transitionSpecDomainError :: DomainError
+  }
+  deriving (Eq, Show)
+
+instance Arbitrary TransitionSpec where
+  arbitrary =
+    TransitionSpec
+      <$> genEndpointName
+      <*> genRawRequest
+      <*> arbitrary
+      <*> arbitrary
+      <*> genDBQuery
+      <*> arbitrary
+      <*> genDBCommand
+      <*> arbitrary
+      <*> arbitrary
+      <*> genRawResponse
+      <*> genApiError
+      <*> genDomainError
 
 data ObservationFailure
   = ObservationApiFailure ApiError
@@ -77,104 +142,102 @@ tests =
   testGroup
     "Arm.Core"
     [ testGroup
-        "Observation"
-        [ testProperty "exposes a semantic endpoint name" propObservationName
-        , testProperty "maps decoded input to a context query" propObservationQuery
-        , testProperty "maps request and context to a raw response" propObservationPipeline
-        , testProperty "keeps API decode failures distinct" propObservationApiFailure
-        , testProperty "keeps domain observation failures distinct" propObservationDomainFailure
+        "Observation laws"
+        [ testProperty "name is part of the endpoint description" propObservationName
+        , testProperty "success preserves query and encoded output sentinels" propObservationSuccess
+        , testProperty "decode failure is an API failure" propObservationDecodeFailure
+        , testProperty "observe failure is a domain failure" propObservationDomainFailure
         ]
     , testGroup
-        "Transition"
-        [ testProperty "exposes a semantic endpoint name" propTransitionName
-        , testProperty "maps decoded input to a context query" propTransitionQuery
-        , testProperty "maps decisions to database commands" propTransitionCommand
-        , testProperty "maps request, context, and command result to a raw response" propTransitionPipeline
-        , testProperty "keeps API decode failures distinct" propTransitionApiFailure
-        , testProperty "keeps domain decision failures distinct" propTransitionDomainFailure
+        "Transition laws"
+        [ testProperty "name is part of the endpoint description" propTransitionName
+        , testProperty "success preserves query, command, and encoded output sentinels" propTransitionSuccess
+        , testProperty "decode failure is an API failure" propTransitionDecodeFailure
+        , testProperty "decide failure is a domain failure" propTransitionDomainFailure
+        , testProperty "respond failure is an API failure" propTransitionRespondFailure
         ]
     ]
 
-propObservationName :: Property
-propObservationName =
-  observationName observationEndpoint === EndpointName "open-tasks"
+propObservationName :: ObservationSpec -> Property
+propObservationName spec =
+  observationName (successfulObservation spec) === observationSpecName spec
 
-propObservationQuery :: NonEmptyText -> Property
-propObservationQuery (NonEmptyText projectName) =
-  case observationDecode observationEndpoint (RawRequest projectName) of
-    Left err ->
-      counterexample ("unexpected decode failure: " ++ show err) False
-    Right input ->
-      observationBuildQuery observationEndpoint input
-        === DBQuery ("load context for " ++ projectName)
-
-propObservationPipeline :: NonEmptyText -> NonEmptyTexts -> Property
-propObservationPipeline (NonEmptyText projectName) (NonEmptyTexts tasks) =
+propObservationSuccess :: ObservationSpec -> Property
+propObservationSuccess spec =
   runObservationPure
-    observationEndpoint
-    (TestContext tasks)
-    (RawRequest projectName)
-    === Right (RawResponse (projectName ++ ": " ++ joinWith "," tasks))
-
-propObservationApiFailure :: NonEmptyTexts -> Property
-propObservationApiFailure (NonEmptyTexts tasks) =
-  runObservationPure observationEndpoint (TestContext tasks) (RawRequest "")
-    === Left (ObservationApiFailure (ApiError "empty request"))
-
-propObservationDomainFailure :: NonEmptyText -> Property
-propObservationDomainFailure (NonEmptyText projectName) =
-  runObservationPure observationEndpoint (TestContext []) (RawRequest projectName)
-    === Left (ObservationDomainFailure (DomainError "no tasks"))
-
-propTransitionName :: Property
-propTransitionName =
-  transitionName transitionEndpoint === EndpointName "close-task"
-
-propTransitionQuery :: NonEmptyText -> Property
-propTransitionQuery (NonEmptyText taskName) =
-  case transitionDecode transitionEndpoint (RawRequest taskName) of
-    Left err ->
-      counterexample ("unexpected decode failure: " ++ show err) False
-    Right input ->
-      transitionBuildQuery transitionEndpoint input
-        === DBQuery ("load context for " ++ taskName)
-
-propTransitionCommand :: NonEmptyText -> Property
-propTransitionCommand (NonEmptyText taskName) =
-  case transitionDecide transitionEndpoint (TestContext ["open"]) (TestInput taskName) of
-    Left err ->
-      counterexample ("unexpected decision failure: " ++ show err) False
-    Right decision ->
-      transitionBuildCommand transitionEndpoint decision
-        === DBCommand ("execute close " ++ taskName)
-
-propTransitionPipeline :: NonEmptyText -> NonNegative Int -> Property
-propTransitionPipeline (NonEmptyText taskName) (NonNegative rows) =
-  runTransitionPure
-    transitionEndpoint
-    (TestContext ["open"])
-    (TestResult rows)
-    (RawRequest taskName)
+    (successfulObservation spec)
+    (observationSpecContext spec)
+    (observationSpecRaw spec)
     === Right
-      ( DBCommand ("execute close " ++ taskName)
-      , RawResponse ("closed " ++ show rows ++ " row with open")
+      ( observationSpecQuery spec
+      , observationSpecResponse spec
       )
 
-propTransitionApiFailure :: NonNegative Int -> Property
-propTransitionApiFailure (NonNegative rows) =
-  runTransitionPure transitionEndpoint (TestContext ["open"]) (TestResult rows) (RawRequest "")
-    === Left (TransitionApiFailure (ApiError "empty request"))
+propObservationDecodeFailure :: ObservationSpec -> Property
+propObservationDecodeFailure spec =
+  runObservationPure
+    (apiFailingObservation spec)
+    (observationSpecContext spec)
+    (observationSpecRaw spec)
+    === Left (ObservationApiFailure (observationSpecApiError spec))
 
-propTransitionDomainFailure :: NonEmptyText -> NonNegative Int -> Property
-propTransitionDomainFailure (NonEmptyText taskName) (NonNegative rows) =
-  runTransitionPure transitionEndpoint (TestContext ["closed"]) (TestResult rows) (RawRequest taskName)
-    === Left (TransitionDomainFailure (DomainError "task is not open"))
+propObservationDomainFailure :: ObservationSpec -> Property
+propObservationDomainFailure spec =
+  runObservationPure
+    (domainFailingObservation spec)
+    (observationSpecContext spec)
+    (observationSpecRaw spec)
+    === Left (ObservationDomainFailure (observationSpecDomainError spec))
+
+propTransitionName :: TransitionSpec -> Property
+propTransitionName spec =
+  transitionName (successfulTransition spec) === transitionSpecName spec
+
+propTransitionSuccess :: TransitionSpec -> Property
+propTransitionSuccess spec =
+  runTransitionPure
+    (successfulTransition spec)
+    (transitionSpecContext spec)
+    (transitionSpecResult spec)
+    (transitionSpecRaw spec)
+    === Right
+      ( transitionSpecQuery spec
+      , transitionSpecCommand spec
+      , transitionSpecResponse spec
+      )
+
+propTransitionDecodeFailure :: TransitionSpec -> Property
+propTransitionDecodeFailure spec =
+  runTransitionPure
+    (apiFailingTransition spec)
+    (transitionSpecContext spec)
+    (transitionSpecResult spec)
+    (transitionSpecRaw spec)
+    === Left (TransitionApiFailure (transitionSpecApiError spec))
+
+propTransitionDomainFailure :: TransitionSpec -> Property
+propTransitionDomainFailure spec =
+  runTransitionPure
+    (domainFailingTransition spec)
+    (transitionSpecContext spec)
+    (transitionSpecResult spec)
+    (transitionSpecRaw spec)
+    === Left (TransitionDomainFailure (transitionSpecDomainError spec))
+
+propTransitionRespondFailure :: TransitionSpec -> Property
+propTransitionRespondFailure spec =
+  runTransitionPure
+    (respondFailingTransition spec)
+    (transitionSpecContext spec)
+    (transitionSpecResult spec)
+    (transitionSpecRaw spec)
+    === Left (TransitionApiFailure (transitionSpecApiError spec))
 
 runObservationPure
   :: Observation input context output
   -> context
   -> RawRequest
-  -> Either ObservationFailure RawResponse
+  -> Either ObservationFailure (DBQuery context, RawResponse)
 runObservationPure endpoint context raw =
   case observationDecode endpoint raw of
     Left err ->
@@ -184,14 +247,17 @@ runObservationPure endpoint context raw =
         Left err ->
           Left (ObservationDomainFailure err)
         Right output ->
-          Right (observationEncode endpoint output)
+          Right
+            ( observationBuildQuery endpoint input
+            , observationEncode endpoint output
+            )
 
 runTransitionPure
   :: Transition input context decision result output
   -> context
   -> result
   -> RawRequest
-  -> Either TransitionFailure (DBCommand result, RawResponse)
+  -> Either TransitionFailure (DBQuery context, DBCommand result, RawResponse)
 runTransitionPure endpoint context result raw =
   case transitionDecode endpoint raw of
     Left err ->
@@ -206,30 +272,117 @@ runTransitionPure endpoint context result raw =
               Left (TransitionApiFailure err)
             Right output ->
               Right
-                ( transitionBuildCommand endpoint decision
+                ( transitionBuildQuery endpoint input
+                , transitionBuildCommand endpoint decision
                 , transitionEncode endpoint output
                 )
 
-observationEndpoint :: Observation TestInput TestContext TestOutput
-observationEndpoint =
+successfulObservation :: ObservationSpec -> Observation TestInput TestContext TestOutput
+successfulObservation spec =
   Observation
-    { name = EndpointName "open-tasks"
-    , decode = decodeInput
-    , buildQuery = buildContextQuery
-    , observe = observeTasks
-    , encode = encodeOutput
+    { name = observationSpecName spec
+    , decode = \raw ->
+        if raw == observationSpecRaw spec
+          then Right (observationSpecInput spec)
+          else Left (observationSpecApiError spec)
+    , buildQuery = \input ->
+        if input == observationSpecInput spec
+          then observationSpecQuery spec
+          else unexpectedQuery
+    , observe = \context input ->
+        if context == observationSpecContext spec && input == observationSpecInput spec
+          then Right (observationSpecOutput spec)
+          else Left (observationSpecDomainError spec)
+    , encode = \output ->
+        if output == observationSpecOutput spec
+          then observationSpecResponse spec
+          else unexpectedResponse
     }
 
-transitionEndpoint :: Transition TestInput TestContext TestDecision TestResult TestOutput
-transitionEndpoint =
+apiFailingObservation :: ObservationSpec -> Observation TestInput TestContext TestOutput
+apiFailingObservation spec =
+  Observation
+    { name = observationSpecName spec
+    , decode = const (Left (observationSpecApiError spec))
+    , buildQuery = const unexpectedQuery
+    , observe = \_ _ -> Left (observationSpecDomainError spec)
+    , encode = const unexpectedResponse
+    }
+
+domainFailingObservation :: ObservationSpec -> Observation TestInput TestContext TestOutput
+domainFailingObservation spec =
+  Observation
+    { name = observationSpecName spec
+    , decode = const (Right (observationSpecInput spec))
+    , buildQuery = const (observationSpecQuery spec)
+    , observe = \_ _ -> Left (observationSpecDomainError spec)
+    , encode = const unexpectedResponse
+    }
+
+successfulTransition :: TransitionSpec -> Transition TestInput TestContext TestDecision TestResult TestOutput
+successfulTransition spec =
   Transition
-    { name = EndpointName "close-task"
-    , decode = decodeInput
-    , buildQuery = buildContextQuery
-    , decide = decideCloseTask
-    , buildCommand = buildCloseTaskCommand
-    , respond = respondCloseTask
-    , encode = encodeOutput
+    { name = transitionSpecName spec
+    , decode = \raw ->
+        if raw == transitionSpecRaw spec
+          then Right (transitionSpecInput spec)
+          else Left (transitionSpecApiError spec)
+    , buildQuery = \input ->
+        if input == transitionSpecInput spec
+          then transitionSpecQuery spec
+          else unexpectedQuery
+    , decide = \context input ->
+        if context == transitionSpecContext spec && input == transitionSpecInput spec
+          then Right (transitionSpecDecision spec)
+          else Left (transitionSpecDomainError spec)
+    , buildCommand = \decision ->
+        if decision == transitionSpecDecision spec
+          then transitionSpecCommand spec
+          else unexpectedCommand
+    , respond = \context result ->
+        if context == transitionSpecContext spec && result == transitionSpecResult spec
+          then Right (transitionSpecOutput spec)
+          else Left (transitionSpecApiError spec)
+    , encode = \output ->
+        if output == transitionSpecOutput spec
+          then transitionSpecResponse spec
+          else unexpectedResponse
+    }
+
+apiFailingTransition :: TransitionSpec -> Transition TestInput TestContext TestDecision TestResult TestOutput
+apiFailingTransition spec =
+  Transition
+    { name = transitionSpecName spec
+    , decode = const (Left (transitionSpecApiError spec))
+    , buildQuery = const unexpectedQuery
+    , decide = \_ _ -> Left (transitionSpecDomainError spec)
+    , buildCommand = const unexpectedCommand
+    , respond = \_ _ -> Left (transitionSpecApiError spec)
+    , encode = const unexpectedResponse
+    }
+
+domainFailingTransition :: TransitionSpec -> Transition TestInput TestContext TestDecision TestResult TestOutput
+domainFailingTransition spec =
+  Transition
+    { name = transitionSpecName spec
+    , decode = const (Right (transitionSpecInput spec))
+    , buildQuery = const (transitionSpecQuery spec)
+    , decide = \_ _ -> Left (transitionSpecDomainError spec)
+    , buildCommand = const unexpectedCommand
+    , respond = \_ _ -> Left (transitionSpecApiError spec)
+    , encode = const unexpectedResponse
+    }
+
+respondFailingTransition :: TransitionSpec -> Transition TestInput TestContext TestDecision TestResult TestOutput
+respondFailingTransition spec =
+  Transition
+    { name = transitionSpecName spec
+    , decode = const (Right (transitionSpecInput spec))
+    , buildQuery = const (transitionSpecQuery spec)
+    , decide = \_ _ -> Right (transitionSpecDecision spec)
+    , buildCommand = const (transitionSpecCommand spec)
+    , respond = \_ _ -> Left (transitionSpecApiError spec)
+    , encode = const unexpectedResponse
     }
 
 observationName :: Observation input context output -> EndpointName
@@ -280,43 +433,51 @@ transitionEncode :: Transition input context decision result output -> output ->
 transitionEncode Transition {encode = encodeEndpoint} =
   encodeEndpoint
 
-decodeInput :: RawRequest -> Either ApiError TestInput
-decodeInput (RawRequest body)
-  | null body = Left (ApiError "empty request")
-  | otherwise = Right (TestInput body)
+genEndpointName :: Gen EndpointName
+genEndpointName =
+  EndpointName <$> genText
 
-buildContextQuery :: TestInput -> DBQuery TestContext
-buildContextQuery (TestInput inputName) =
-  DBQuery ("load context for " ++ inputName)
+genRawRequest :: Gen RawRequest
+genRawRequest =
+  RawRequest <$> genText
 
-observeTasks :: TestContext -> TestInput -> Either DomainError TestOutput
-observeTasks (TestContext tasks) (TestInput projectName)
-  | null tasks = Left (DomainError "no tasks")
-  | otherwise = Right (TestOutput (projectName ++ ": " ++ joinWith "," tasks))
+genRawResponse :: Gen RawResponse
+genRawResponse =
+  RawResponse <$> genText
 
-decideCloseTask :: TestContext -> TestInput -> Either DomainError TestDecision
-decideCloseTask (TestContext states) (TestInput taskName)
-  | "open" `elem` states = Right (TestDecision ("close " ++ taskName))
-  | otherwise = Left (DomainError "task is not open")
+genApiError :: Gen ApiError
+genApiError =
+  ApiError <$> genText
 
-buildCloseTaskCommand :: TestDecision -> DBCommand TestResult
-buildCloseTaskCommand (TestDecision decision) =
-  DBCommand ("execute " ++ decision)
+genDomainError :: Gen DomainError
+genDomainError =
+  DomainError <$> genText
 
-respondCloseTask :: TestContext -> TestResult -> Either ApiError TestOutput
-respondCloseTask (TestContext states) (TestResult rows) =
-  Right (TestOutput ("closed " ++ show rows ++ " row with " ++ joinWith "," states))
+genDBQuery :: Gen (DBQuery a)
+genDBQuery =
+  DBQuery <$> genText
 
-encodeOutput :: TestOutput -> RawResponse
-encodeOutput (TestOutput output) =
-  RawResponse output
+genDBCommand :: Gen (DBCommand a)
+genDBCommand =
+  DBCommand <$> genText
+
+genText :: Gen String
+genText = do
+  Label value <- arbitrary
+  pure value
 
 safeChar :: Gen Char
 safeChar =
   choose ('a', 'z')
 
-joinWith :: String -> [String] -> String
-joinWith _ [] = ""
-joinWith _ [value] = value
-joinWith separator (value : values) =
-  value ++ separator ++ joinWith separator values
+unexpectedQuery :: DBQuery a
+unexpectedQuery =
+  DBQuery "__unexpected_query__"
+
+unexpectedCommand :: DBCommand a
+unexpectedCommand =
+  DBCommand "__unexpected_command__"
+
+unexpectedResponse :: RawResponse
+unexpectedResponse =
+  RawResponse "__unexpected_response__"
