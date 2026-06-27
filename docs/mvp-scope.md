@@ -30,8 +30,8 @@ can read and write a real PostgreSQL database.
 The MVP should center on two endpoint kinds:
 
 ```haskell
-data Observation input context output
-data Transition input context decision result output
+data Observation input context domainError output
+data Transition input context domainError decision result output
 ```
 
 An observation represents:
@@ -50,26 +50,28 @@ The earlier generic endpoint shape remains useful, but in the MVP it should be
 split semantically:
 
 ```haskell
-data Observation input context output = Observation
+data Observation input context domainError output = Observation
   { name       :: EndpointName
   , decode     :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
-  , observe    :: context -> input -> Either DomainError output
+  , observe    :: context -> input -> Either domainError output
   , encode     :: output -> RawResponse
   }
 
-data Transition input context decision result output = Transition
+data Transition input context domainError decision result output = Transition
   { name         :: EndpointName
   , decode       :: RawRequest -> Either ApiError input
   , buildQuery   :: input -> DBQuery context
-  , decide       :: context -> input -> Either DomainError decision
+  , decide       :: context -> input -> Either domainError decision
   , buildCommand :: decision -> DBCommand result
   , respond      :: context -> result -> Either ApiError output
   , encode       :: output -> RawResponse
   }
 ```
 
-The exact Haskell API can evolve, but the MVP should preserve this separation.
+The concrete domain error type is supplied by the application and translated to
+`ApiError` only at the execution boundary. The exact Haskell API can evolve, but
+the MVP should preserve this separation.
 
 ## HTTP Target
 

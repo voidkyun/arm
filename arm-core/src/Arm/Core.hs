@@ -6,13 +6,11 @@ module Arm.Core
   , RawResponse (..)
   , ApiErrorKind (..)
   , ApiError (..)
-  , DomainErrorKind (..)
-  , DomainError (..)
+  , DomainErrorBoundary
   , DBQuery (..)
   , DBCommand (..)
   , Observation (..)
   , Transition (..)
-  , domainErrorToApiError
   , executeObservation
   , executeTransition
   , coreBoundary
@@ -49,19 +47,7 @@ data ApiError = ApiError
   }
   deriving (Eq, Ord, Show)
 
-data DomainErrorKind
-  = DomainValidationError
-  | DomainAuthorizationError
-  | DomainNotFoundError
-  | DomainConflictError
-  | DomainInvariantViolation
-  deriving (Eq, Ord, Show)
-
-data DomainError = DomainError
-  { domainErrorKind :: DomainErrorKind
-  , domainErrorMessage :: String
-  }
-  deriving (Eq, Ord, Show)
+type DomainErrorBoundary domainError = domainError -> ApiError
 
 newtype DBQuery a = DBQuery
   { dbQueryDescription :: String
@@ -73,38 +59,33 @@ newtype DBCommand a = DBCommand
   }
   deriving (Eq, Ord, Show)
 
-data Observation input context output = Observation
+data Observation input context domainError output = Observation
   { name :: EndpointName
   , decode :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
-  , observe :: context -> input -> Either DomainError output
+  , observe :: context -> input -> Either domainError output
   , encode :: output -> Either ApiError RawResponse
   }
 
-data Transition input context decision result output = Transition
+data Transition input context domainError decision result output = Transition
   { name :: EndpointName
   , decode :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
-  , decide :: context -> input -> Either DomainError decision
+  , decide :: context -> input -> Either domainError decision
   , buildCommand :: decision -> DBCommand result
   , respond :: context -> result -> Either ApiError output
   , encode :: output -> Either ApiError RawResponse
   }
 
-domainErrorToApiError :: DomainError -> ApiError
-domainErrorToApiError DomainError {domainErrorKind, domainErrorMessage} =
-  ApiError
-    { apiErrorKind = domainErrorKindToApiErrorKind domainErrorKind
-    , apiErrorMessage = domainErrorMessage
-    }
-
 executeObservation
   :: Monad m
-  => (DBQuery context -> m (Either ApiError context))
-  -> Observation input context output
+  => DomainErrorBoundary domainError
+  -> (DBQuery context -> m (Either ApiError context))
+  -> Observation input context domainError output
   -> RawRequest
   -> m (Either ApiError RawResponse)
 executeObservation
+  mapDomainError
   runQuery
   Observation
     { decode = decodeRequest
@@ -125,19 +106,21 @@ executeObservation
             pure
               ( case observeDomain context input of
                   Left domainError ->
-                    Left (domainErrorToApiError domainError)
+                    Left (mapDomainError domainError)
                   Right output ->
                     encodeResponse output
               )
 
 executeTransition
   :: Monad m
-  => (DBQuery context -> m (Either ApiError context))
+  => DomainErrorBoundary domainError
+  -> (DBQuery context -> m (Either ApiError context))
   -> (DBCommand result -> m (Either ApiError result))
-  -> Transition input context decision result output
+  -> Transition input context domainError decision result output
   -> RawRequest
   -> m (Either ApiError RawResponse)
 executeTransition
+  mapDomainError
   runQuery
   runCommand
   Transition
@@ -160,7 +143,7 @@ executeTransition
           Right context ->
             case decideDomain context input of
               Left domainError ->
-                pure (Left (domainErrorToApiError domainError))
+                pure (Left (mapDomainError domainError))
               Right decision -> do
                 commandResult <- runCommand (buildDecisionCommand decision)
                 case commandResult of
@@ -177,17 +160,3 @@ executeTransition
 
 coreBoundary :: String
 coreBoundary = "arm-core"
-
-domainErrorKindToApiErrorKind :: DomainErrorKind -> ApiErrorKind
-domainErrorKindToApiErrorKind domainErrorKind =
-  case domainErrorKind of
-    DomainValidationError ->
-      ApiValidationError
-    DomainAuthorizationError ->
-      ApiAuthorizationError
-    DomainNotFoundError ->
-      ApiNotFoundError
-    DomainConflictError ->
-      ApiConflictError
-    DomainInvariantViolation ->
-      ApiInvariantViolation

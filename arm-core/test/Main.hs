@@ -10,15 +10,13 @@ import Arm.Core
     ApiErrorKind (..),
     DBCommand (..),
     DBQuery (..),
-    DomainError (..),
-    DomainErrorKind (..),
+    DomainErrorBoundary,
     EndpointName (..),
     Observation (..),
     RawRequest (..),
     RawResponse (..),
     Transition (..),
     coreBoundary,
-    domainErrorToApiError,
     executeObservation,
     executeTransition,
   )
@@ -48,8 +46,10 @@ newtype Label = Label String
 newtype ApiKind = ApiKind ApiErrorKind
   deriving (Show)
 
-newtype DomainKind = DomainKind DomainErrorKind
-  deriving (Show)
+data TaskDomainError
+  = TaskAlreadyExists String
+  | TaskInvariantBroken String
+  deriving (Eq, Show)
 
 instance Arbitrary Label where
   arbitrary = Label <$> listOf1 safeChar
@@ -67,17 +67,6 @@ instance Arbitrary ApiKind where
           ApiUnexpectedInterpreterFailure
         ]
 
-instance Arbitrary DomainKind where
-  arbitrary =
-    DomainKind
-      <$> elements
-        [ DomainValidationError,
-          DomainAuthorizationError,
-          DomainNotFoundError,
-          DomainConflictError,
-          DomainInvariantViolation
-        ]
-
 main :: IO ()
 main = defaultMain tests
 
@@ -92,8 +81,6 @@ tests =
           testProperty "RawRequest preserves its body" propRawRequestRoundTrip,
           testProperty "RawResponse preserves its body" propRawResponseRoundTrip,
           testProperty "ApiError preserves its kind and message" propApiErrorRoundTrip,
-          testProperty "DomainError preserves its kind and message" propDomainErrorRoundTrip,
-          testProperty "DomainError maps to a boundary ApiError" propDomainErrorToApiError,
           testProperty "DBQuery preserves its description" propDBQueryRoundTrip,
           testProperty "DBCommand preserves its description" propDBCommandRoundTrip
         ],
@@ -107,7 +94,7 @@ tests =
         [ testProperty "Observation execution can succeed" propObservationExecutionSucceeds,
           testProperty "Observation decode failures are returned" propObservationDecodeFailure,
           testProperty "Observation query failures are returned" propObservationQueryFailure,
-          testProperty "Observation domain failures become ApiError values" propObservationDomainFailure,
+          testProperty "Observation domain failures use the supplied boundary" propObservationDomainFailure,
           testProperty "Observation encode failures are returned" propObservationEncodeFailure
         ],
       testGroup
@@ -115,7 +102,7 @@ tests =
         [ testProperty "Transition execution can succeed" propTransitionExecutionSucceeds,
           testProperty "Transition decode failures are returned" propTransitionDecodeFailure,
           testProperty "Transition query failures are returned" propTransitionQueryFailure,
-          testProperty "Transition decision failures become ApiError values" propTransitionDecisionFailure,
+          testProperty "Transition decision failures use the supplied boundary" propTransitionDecisionFailure,
           testProperty "Transition command failures are returned" propTransitionCommandFailure,
           testProperty "Transition response failures are returned" propTransitionRespondFailure,
           testProperty "Transition encode failures are returned" propTransitionEncodeFailure
@@ -144,17 +131,6 @@ propApiErrorRoundTrip (ApiKind kind) (Label value) =
   where
     apiError = ApiError kind value
 
-propDomainErrorRoundTrip :: DomainKind -> Label -> Property
-propDomainErrorRoundTrip (DomainKind kind) (Label value) =
-  (domainErrorKind domainError, domainErrorMessage domainError) === (kind, value)
-  where
-    domainError = DomainError kind value
-
-propDomainErrorToApiError :: DomainKind -> Label -> Property
-propDomainErrorToApiError (DomainKind kind) (Label value) =
-  domainErrorToApiError (DomainError kind value)
-    === ApiError (expectedApiErrorKind kind) value
-
 propDBQueryRoundTrip :: Label -> Property
 propDBQueryRoundTrip (Label value) =
   dbQueryDescription (DBQuery value :: DBQuery ()) === value
@@ -179,7 +155,13 @@ propTransitionCarriesEndpointName (Label value) =
 
 propObservationExecutionSucceeds :: Label -> Property
 propObservationExecutionSucceeds (Label value) =
-  runIdentity (executeObservation successfulQuery successfulObservation rawRequest)
+  runIdentity
+    ( executeObservation
+        unexpectedDomainErrorToApiError
+        successfulQuery
+        successfulObservation
+        rawRequest
+    )
     === expected
   where
     rawRequest = RawRequest value
@@ -194,7 +176,13 @@ propObservationExecutionSucceeds (Label value) =
 
 propObservationDecodeFailure :: Label -> Property
 propObservationDecodeFailure (Label value) =
-  runIdentity (executeObservation failIfQueryRuns endpoint (RawRequest value))
+  runIdentity
+    ( executeObservation
+        unexpectedDomainErrorToApiError
+        failIfQueryRuns
+        endpoint
+        (RawRequest value)
+    )
     === Left expected
   where
     expected = ApiError ApiParseError value
@@ -209,7 +197,13 @@ propObservationDecodeFailure (Label value) =
 
 propObservationQueryFailure :: Label -> Property
 propObservationQueryFailure (Label value) =
-  runIdentity (executeObservation runQuery endpoint (RawRequest value))
+  runIdentity
+    ( executeObservation
+        unexpectedDomainErrorToApiError
+        runQuery
+        endpoint
+        (RawRequest value)
+    )
     === Left expected
   where
     expected = ApiError ApiUnexpectedInterpreterFailure value
@@ -221,10 +215,16 @@ propObservationQueryFailure (Label value) =
 
 propObservationDomainFailure :: Label -> Property
 propObservationDomainFailure (Label value) =
-  runIdentity (executeObservation successfulUnitQuery endpoint (RawRequest value))
-    === Left (domainErrorToApiError domainError)
+  runIdentity
+    ( executeObservation
+        taskDomainErrorToApiError
+        successfulUnitQuery
+        endpoint
+        (RawRequest value)
+    )
+    === Left (taskDomainErrorToApiError domainError)
   where
-    domainError = DomainError DomainConflictError value
+    domainError = TaskAlreadyExists value
     endpoint =
       (minimalObservation (EndpointName "domain-failure"))
         { observe = \_ _ -> Left domainError,
@@ -233,7 +233,13 @@ propObservationDomainFailure (Label value) =
 
 propObservationEncodeFailure :: Label -> Property
 propObservationEncodeFailure (Label value) =
-  runIdentity (executeObservation successfulUnitQuery endpoint (RawRequest value))
+  runIdentity
+    ( executeObservation
+        unexpectedDomainErrorToApiError
+        successfulUnitQuery
+        endpoint
+        (RawRequest value)
+    )
     === Left expected
   where
     expected = ApiError ApiValidationError value
@@ -250,6 +256,7 @@ propTransitionExecutionSucceeds :: Label -> Property
 propTransitionExecutionSucceeds (Label value) =
   runIdentity
     ( executeTransition
+        unexpectedDomainErrorToApiError
         successfulQuery
         successfulCommand
         successfulTransition
@@ -274,6 +281,7 @@ propTransitionDecodeFailure :: Label -> Property
 propTransitionDecodeFailure (Label value) =
   runIdentity
     ( executeTransition
+        unexpectedDomainErrorToApiError
         failIfQueryRuns
         failIfCommandRuns
         endpoint
@@ -297,6 +305,7 @@ propTransitionQueryFailure :: Label -> Property
 propTransitionQueryFailure (Label value) =
   runIdentity
     ( executeTransition
+        unexpectedDomainErrorToApiError
         runQuery
         failIfCommandRuns
         endpoint
@@ -315,14 +324,15 @@ propTransitionDecisionFailure :: Label -> Property
 propTransitionDecisionFailure (Label value) =
   runIdentity
     ( executeTransition
+        taskDomainErrorToApiError
         successfulUnitQuery
         failIfCommandRuns
         endpoint
         (RawRequest value)
     )
-    === Left (domainErrorToApiError domainError)
+    === Left (taskDomainErrorToApiError domainError)
   where
-    domainError = DomainError DomainInvariantViolation value
+    domainError = TaskInvariantBroken value
     endpoint =
       (minimalTransition (EndpointName "decision-failure"))
         { decide = \_ _ -> Left domainError,
@@ -333,6 +343,7 @@ propTransitionCommandFailure :: Label -> Property
 propTransitionCommandFailure (Label value) =
   runIdentity
     ( executeTransition
+        unexpectedDomainErrorToApiError
         successfulUnitQuery
         runCommand
         endpoint
@@ -351,6 +362,7 @@ propTransitionRespondFailure :: Label -> Property
 propTransitionRespondFailure (Label value) =
   runIdentity
     ( executeTransition
+        unexpectedDomainErrorToApiError
         successfulUnitQuery
         successfulUnitCommand
         endpoint
@@ -369,6 +381,7 @@ propTransitionEncodeFailure :: Label -> Property
 propTransitionEncodeFailure (Label value) =
   runIdentity
     ( executeTransition
+        unexpectedDomainErrorToApiError
         successfulUnitQuery
         successfulUnitCommand
         endpoint
@@ -388,7 +401,7 @@ propTransitionEncodeFailure (Label value) =
           encode = const (Left expected)
         }
 
-minimalObservation :: EndpointName -> Observation () () ()
+minimalObservation :: EndpointName -> Observation () () domainError ()
 minimalObservation endpointName =
   Observation
     { name = endpointName,
@@ -398,7 +411,7 @@ minimalObservation endpointName =
       encode = const (Right (RawResponse "response"))
     }
 
-minimalTransition :: EndpointName -> Transition () () () () ()
+minimalTransition :: EndpointName -> Transition () () domainError () () ()
 minimalTransition endpointName =
   Transition
     { name = endpointName,
@@ -410,7 +423,7 @@ minimalTransition endpointName =
       encode = const (Right (RawResponse "response"))
     }
 
-successfulObservation :: Observation String String String
+successfulObservation :: Observation String String domainError String
 successfulObservation =
   Observation
     { name = EndpointName "successful-observation",
@@ -420,7 +433,7 @@ successfulObservation =
       encode = \output -> Right (RawResponse output)
     }
 
-successfulTransition :: Transition String String String String String
+successfulTransition :: Transition String String domainError String String String
 successfulTransition =
   Transition
     { name = EndpointName "successful-transition",
@@ -456,19 +469,17 @@ failIfCommandRuns :: DBCommand result -> Identity (Either ApiError result)
 failIfCommandRuns _ =
   error "command should not run"
 
-expectedApiErrorKind :: DomainErrorKind -> ApiErrorKind
-expectedApiErrorKind kind =
-  case kind of
-    DomainValidationError ->
-      ApiValidationError
-    DomainAuthorizationError ->
-      ApiAuthorizationError
-    DomainNotFoundError ->
-      ApiNotFoundError
-    DomainConflictError ->
-      ApiConflictError
-    DomainInvariantViolation ->
-      ApiInvariantViolation
+taskDomainErrorToApiError :: DomainErrorBoundary TaskDomainError
+taskDomainErrorToApiError domainError =
+  case domainError of
+    TaskAlreadyExists value ->
+      ApiError ApiConflictError value
+    TaskInvariantBroken value ->
+      ApiError ApiInvariantViolation value
+
+unexpectedDomainErrorToApiError :: DomainErrorBoundary domainError
+unexpectedDomainErrorToApiError _ =
+  error "domain error should not be converted"
 
 safeChar :: Gen Char
 safeChar =
