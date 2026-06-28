@@ -17,6 +17,8 @@ executable arm-example-task
       arm-core,
       arm-postgresql,
       arm-wai,
-      base >=4.18 && <5
+      base >=4.18 && <5,
+      wai >=3.2 && <3.3,
+      warp >=3.3 && <3.5
   default-language: GHC2021
-  ghc-options: -Wall
+  ghc-options: -Wall -threaded

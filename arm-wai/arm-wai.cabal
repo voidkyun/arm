@@ -16,6 +16,26 @@ library
       src
   build-depends:
       arm-core,
-      base >=4.18 && <5
+      base >=4.18 && <5,
+      bytestring >=0.12 && <0.13,
+      http-types >=0.12 && <0.13,
+      wai >=3.2 && <3.3
+  default-language: GHC2021
+  ghc-options: -Wall
+
+test-suite arm-wai-test
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs:
+      test
+  build-depends:
+      arm-core,
+      arm-wai,
+      base >=4.18 && <5,
+      bytestring >=0.12 && <0.13,
+      http-types >=0.12 && <0.13,
+      tasty >=1.5 && <1.6,
+      tasty-hunit >=0.10 && <0.11,
+      wai >=3.2 && <3.3
   default-language: GHC2021
   ghc-options: -Wall
