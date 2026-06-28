@@ -11,6 +11,7 @@ interpreter.
 
 - [URL Design](docs/url-design.md)
 - [MVP Scope](docs/mvp-scope.md)
+- [Library and Example Boundary](docs/library-example-boundary.md)
 
 ## Package Boundaries
 
@@ -26,3 +27,18 @@ ARM starts as a Cabal multi-package workspace:
 The initial package split keeps the domain and endpoint core independent from
 HTTP and database interpreters. Concrete endpoint types, WAI routing, and
 PostgreSQL execution are added in later MVP issues.
+
+## SQL Execution
+
+ARM represents database effects as data:
+
+- `DBQuery a` describes a parameterized SQL read and decodes relational rows into
+  a typed context value.
+- `DBCommand a` describes a parameterized SQL write and decodes the command
+  result at the API boundary.
+- `DeltaCommand delta result` builds commands from typed transition deltas.
+
+The PostgreSQL interpreter executes those values against a `Connection` or
+`Pool Connection`. A transition still decides its delta in pure code; SQL only
+applies that delta to the relational extension. This is intentionally not object
+persistence or an ORM-style row serializer.
