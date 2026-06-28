@@ -22,8 +22,8 @@ In ARM, a database schema is interpreted as an algebraic structure:
 * constraints
 * queries
 * commands
-* domain decisions
-* state transitions
+* domain delta decisions
+* transition deltas
 * responses
 
 The goal is not to hide the database behind objects, but to make the relationship between relational data and domain logic explicit, typed, and composable.
@@ -44,7 +44,7 @@ A realistic endpoint usually needs to:
 * validate it
 * query the database
 * construct a domain state or context
-* make a domain decision
+* decide a domain algebra delta
 * generate database commands
 * execute those commands
 * build a response
@@ -75,7 +75,7 @@ It describes:
 
 * what kind of request was received
 * what data is required
-* what decision should be made
+* what delta should be decided
 * what command should be executed
 * what response should be returned
 
@@ -100,9 +100,9 @@ Request
 
 Context
   -> Request
-  -> Either domainError Decision
+  -> Either domainError Delta
 
-Decision
+Delta
   -> DBCommand Result
 
 Context
@@ -166,7 +166,8 @@ In ARM, a domain algebra consists of:
 * constraints
 * queries
 * commands
-* decisions
+* delta decisions
+* deltas
 * results
 * events
 * response transformations
@@ -177,25 +178,64 @@ For example:
 data CreateTaskRequest
 data CreateTaskContext
 data CreateTaskError
-data CreateTaskDecision
+data CreateTaskDelta
 data CreateTaskResult
 data CreateTaskResponse
 ```
 
-A pure domain decision may have a shape like:
+A pure domain delta decision may have a shape like:
 
 ```haskell
 decideCreateTask
   :: CreateTaskContext
   -> CreateTaskRequest
-  -> Either CreateTaskError CreateTaskDecision
+  -> Either CreateTaskError CreateTaskDelta
 ```
 
 This function does not access the database.
 
-It only decides what should happen, given the current context and the request.
+It only decides what delta should be applied, given the current context and the
+request.
 
 Database access is handled separately.
+
+## Deltas, Not Objects
+
+A transition does not construct an object for persistence.
+
+A transition constructs a well-formed delta to the current domain algebra
+extension.
+
+For example, creating a task is not just adding one value to the `Task` set. It
+also defines the mappings that have `Task` as their domain:
+
+```text
++ Task(t)
++ title(t)     = input.title
++ project(t)   = input.project
++ status(t)    = Open
++ createdBy(t) = actor
++ createdAt(t) = now
++ assignee(t)  = input.assignee, when present
+```
+
+The request body may be shaped like JSON object syntax, but its meaning is not a
+serialized `Task` object. It is the set of external arguments required by the
+`createTask` transition. Values such as `status`, `createdBy`, `createdAt`, and
+the generated task identity may come from rules, context, interpreters, or the
+database.
+
+This is the main difference from serializer-driven object persistence:
+
+```text
+serializer:
+  request body -> object or row
+
+ARM:
+  request body -> transition input
+  context + input -> algebra delta
+  algebra delta -> interpreted SQL command
+```
 
 ## Queries and Commands as Data
 
@@ -222,13 +262,13 @@ runQuery :: DBQuery a -> IO a
 Likewise, instead of directly mutating the database inside domain logic:
 
 ```haskell
-Decision -> IO Result
+Delta -> IO Result
 ```
 
 ARM prefers:
 
 ```haskell
-Decision -> DBCommand Result
+Delta -> DBCommand Result
 ```
 
 Then an interpreter executes the command:
@@ -241,16 +281,16 @@ This keeps the domain layer pure and testable.
 
 ## Endpoint Shape
 
-An endpoint can be described as a typed algebraic pipeline.
+An endpoint can be described as a typed algebraic transition pipeline.
 
 One possible representation is:
 
 ```haskell
-data Endpoint req ctx domainError decision result res = Endpoint
+data Transition req ctx domainError delta result res = Transition
   { decode       :: RawRequest -> Either ApiError req
   , buildQuery   :: req -> DBQuery ctx
-  , decide       :: ctx -> req -> Either domainError decision
-  , buildCommand :: decision -> DBCommand result
+  , decide       :: ctx -> req -> Either domainError delta
+  , buildCommand :: delta -> DBCommand result
   , respond      :: ctx -> result -> Either ApiError res
   , encode       :: res -> RawResponse
   }
@@ -261,18 +301,18 @@ Then a generic interpreter can execute any endpoint:
 ```haskell
 handle
   :: (domainError -> ApiError)
-  -> Endpoint req ctx domainError decision result res
+  -> Transition req ctx domainError delta result res
   -> RawRequest
   -> IO RawResponse
 handle mapDomainError endpoint raw = do
   req      <- liftEither $ decode endpoint raw
   ctx      <- runQuery   $ buildQuery endpoint req
-  decision <-
+  delta    <-
     liftEither $
       case decide endpoint ctx req of
         Left domainError -> Left (mapDomainError domainError)
-        Right decision   -> Right decision
-  result   <- runCommand $ buildCommand endpoint decision
+        Right delta       -> Right delta
+  result   <- runCommand $ buildCommand endpoint delta
   res      <- liftEither $ respond endpoint ctx result
   pure        $ encode endpoint res
 ```
@@ -281,7 +321,30 @@ The endpoint-specific parts are pure descriptions.
 
 The interpreter is responsible for effects.
 
-## Request, Context, Decision, Result, Response
+## Observation As Zero-Delta Transition
+
+At the core algebraic level, every ARM endpoint is a transition:
+
+```text
+input x extension -> delta x output
+```
+
+An observation is the safe special case where `delta` is zero. It evaluates the
+current extension and returns an output without authority to change the
+extension.
+
+The public API still distinguishes:
+
+```text
+Observation
+Transition
+```
+
+This distinction is for safety and HTTP semantics. `GET`-like observations do
+not receive a command interpreter. `POST`-like transitions may produce
+non-zero deltas and therefore need an interpreter that can apply commands.
+
+## Request, Context, Delta, Result, Response
 
 ARM does not assume that every endpoint shares the same request, state, or response type.
 
@@ -290,7 +353,7 @@ Each endpoint may define its own types:
 ```haskell
 CreateTaskRequest
 CreateTaskContext
-CreateTaskDecision
+CreateTaskDelta
 CreateTaskResult
 CreateTaskResponse
 ```
@@ -300,7 +363,7 @@ Another endpoint may define:
 ```haskell
 CloseTaskRequest
 CloseTaskContext
-CloseTaskDecision
+CloseTaskDelta
 CloseTaskResult
 CloseTaskResponse
 ```
@@ -312,7 +375,7 @@ The shared abstraction is not a universal object model.
 The shared abstraction is the pipeline:
 
 ```text
-Request -> Query -> Context -> Decision -> Command -> Result -> Response
+Request -> Query -> Context -> Delta -> Command -> Result -> Response
 ```
 
 ## Context Instead of Global State
@@ -336,13 +399,13 @@ The context may include:
 * plan limits
 * relevant constraints
 
-The domain decision receives this context as ordinary data.
+The domain delta decision receives this context as ordinary data.
 
 ```haskell
 decide
   :: CreateTaskContext
   -> CreateTaskRequest
-  -> Either CreateTaskError CreateTaskDecision
+  -> Either CreateTaskError CreateTaskDelta
 ```
 
 This makes the domain logic independent from the database.
@@ -398,7 +461,7 @@ RawRequest -> IO RawResponse
 But the domain core is pure:
 
 ```haskell
-Context -> Request -> Either domainError Decision
+Context -> Request -> Either domainError Delta
 ```
 
 The IO layer sequences effects.
@@ -458,17 +521,18 @@ ARM is a way to model a web application as:
 ```text
 Relational Data
   <-> Domain Algebra
-  -> Typed Decisions
+  -> Typed Deltas
   -> Interpreted Effects
 ```
 
 It treats database schemas as relational representations of algebraic domain structures.
 
-It treats API endpoints as typed pipelines from raw input to interpreted commands and serialized output.
+It treats API endpoints as typed transition pipelines from raw input to
+interpreted commands and serialized output.
 
 It separates:
 
-* parsing from decision-making
+* parsing from delta decision-making
 * querying from domain logic
 * commands from command execution
 * response construction from response serialization

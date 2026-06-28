@@ -16,6 +16,7 @@ import Arm.Core
     RawRequest (..),
     RawResponse (..),
     Transition (..),
+    ZeroDelta (..),
     coreBoundary,
     executeObservation,
     executeTransition,
@@ -81,6 +82,7 @@ tests =
           testProperty "RawRequest preserves its body" propRawRequestRoundTrip,
           testProperty "RawResponse preserves its body" propRawResponseRoundTrip,
           testProperty "ApiError preserves its kind and message" propApiErrorRoundTrip,
+          testProperty "ZeroDelta marks an empty algebra delta" propZeroDeltaIsStable,
           testProperty "DBQuery preserves its description" propDBQueryRoundTrip,
           testProperty "DBCommand preserves its description" propDBCommandRoundTrip
         ],
@@ -102,7 +104,7 @@ tests =
         [ testProperty "Transition execution can succeed" propTransitionExecutionSucceeds,
           testProperty "Transition decode failures are returned" propTransitionDecodeFailure,
           testProperty "Transition query failures are returned" propTransitionQueryFailure,
-          testProperty "Transition decision failures use the supplied boundary" propTransitionDecisionFailure,
+          testProperty "Transition delta failures use the supplied boundary" propTransitionDeltaFailure,
           testProperty "Transition command failures are returned" propTransitionCommandFailure,
           testProperty "Transition response failures are returned" propTransitionRespondFailure,
           testProperty "Transition encode failures are returned" propTransitionEncodeFailure
@@ -130,6 +132,10 @@ propApiErrorRoundTrip (ApiKind kind) (Label value) =
   (apiErrorKind apiError, apiErrorMessage apiError) === (kind, value)
   where
     apiError = ApiError kind value
+
+propZeroDeltaIsStable :: Property
+propZeroDeltaIsStable =
+  ZeroDelta === ZeroDelta
 
 propDBQueryRoundTrip :: Label -> Property
 propDBQueryRoundTrip (Label value) =
@@ -273,7 +279,7 @@ propTransitionExecutionSucceeds (Label value) =
                 <> value
                 <> "-query-context-"
                 <> value
-                <> "-decision-command-result"
+                <> "-delta-command-result"
             )
         )
 
@@ -320,8 +326,8 @@ propTransitionQueryFailure (Label value) =
         }
     runQuery _ = Identity (Left expected)
 
-propTransitionDecisionFailure :: Label -> Property
-propTransitionDecisionFailure (Label value) =
+propTransitionDeltaFailure :: Label -> Property
+propTransitionDeltaFailure (Label value) =
   runIdentity
     ( executeTransition
         taskDomainErrorToApiError
@@ -334,9 +340,9 @@ propTransitionDecisionFailure (Label value) =
   where
     domainError = TaskInvariantBroken value
     endpoint =
-      (minimalTransition (EndpointName "decision-failure"))
+      (minimalTransition (EndpointName "delta-failure"))
         { decide = \_ _ -> Left domainError,
-          buildCommand = \_ -> error "command should not be built after a decision failure"
+          buildCommand = \_ -> error "command should not be built after a delta failure"
         }
 
 propTransitionCommandFailure :: Label -> Property
@@ -439,8 +445,8 @@ successfulTransition =
     { name = EndpointName "successful-transition",
       decode = \(RawRequest rawBody) -> Right rawBody,
       buildQuery = \input -> DBQuery (input <> "-query"),
-      decide = \context input -> Right (context <> "-" <> input <> "-decision"),
-      buildCommand = \decision -> DBCommand (decision <> "-command"),
+      decide = \context input -> Right (context <> "-" <> input <> "-delta"),
+      buildCommand = \delta -> DBCommand (delta <> "-command"),
       respond = \context result -> Right (context <> "-" <> result),
       encode = \output -> Right (RawResponse output)
     }
