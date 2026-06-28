@@ -4,12 +4,15 @@ module Arm.Core
   ( EndpointName (..)
   , RawRequest (..)
   , RawResponse (..)
+  , ApiErrorKind (..)
   , ApiError (..)
-  , DomainError (..)
+  , DomainErrorBoundary
   , DBQuery (..)
   , DBCommand (..)
   , Observation (..)
   , Transition (..)
+  , executeObservation
+  , executeTransition
   , coreBoundary
   ) where
 
@@ -28,15 +31,23 @@ newtype RawResponse = RawResponse
   }
   deriving (Eq, Ord, Show)
 
-newtype ApiError = ApiError
-  { apiErrorMessage :: String
+data ApiErrorKind
+  = ApiParseError
+  | ApiValidationError
+  | ApiAuthorizationError
+  | ApiNotFoundError
+  | ApiConflictError
+  | ApiInvariantViolation
+  | ApiUnexpectedInterpreterFailure
+  deriving (Eq, Ord, Show)
+
+data ApiError = ApiError
+  { apiErrorKind :: ApiErrorKind
+  , apiErrorMessage :: String
   }
   deriving (Eq, Ord, Show)
 
-newtype DomainError = DomainError
-  { domainErrorMessage :: String
-  }
-  deriving (Eq, Ord, Show)
+type DomainErrorBoundary domainError = domainError -> ApiError
 
 newtype DBQuery a = DBQuery
   { dbQueryDescription :: String
@@ -48,23 +59,104 @@ newtype DBCommand a = DBCommand
   }
   deriving (Eq, Ord, Show)
 
-data Observation input context output = Observation
+data Observation input context domainError output = Observation
   { name :: EndpointName
   , decode :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
-  , observe :: context -> input -> Either DomainError output
-  , encode :: output -> RawResponse
+  , observe :: context -> input -> Either domainError output
+  , encode :: output -> Either ApiError RawResponse
   }
 
-data Transition input context decision result output = Transition
+data Transition input context domainError decision result output = Transition
   { name :: EndpointName
   , decode :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
-  , decide :: context -> input -> Either DomainError decision
+  , decide :: context -> input -> Either domainError decision
   , buildCommand :: decision -> DBCommand result
   , respond :: context -> result -> Either ApiError output
-  , encode :: output -> RawResponse
+  , encode :: output -> Either ApiError RawResponse
   }
+
+executeObservation
+  :: Monad m
+  => DomainErrorBoundary domainError
+  -> (DBQuery context -> m (Either ApiError context))
+  -> Observation input context domainError output
+  -> RawRequest
+  -> m (Either ApiError RawResponse)
+executeObservation
+  mapDomainError
+  runQuery
+  Observation
+    { decode = decodeRequest
+    , buildQuery = buildContextQuery
+    , observe = observeDomain
+    , encode = encodeResponse
+    }
+  rawRequest =
+    case decodeRequest rawRequest of
+      Left apiError ->
+        pure (Left apiError)
+      Right input -> do
+        contextResult <- runQuery (buildContextQuery input)
+        case contextResult of
+          Left apiError ->
+            pure (Left apiError)
+          Right context ->
+            pure
+              ( case observeDomain context input of
+                  Left domainError ->
+                    Left (mapDomainError domainError)
+                  Right output ->
+                    encodeResponse output
+              )
+
+executeTransition
+  :: Monad m
+  => DomainErrorBoundary domainError
+  -> (DBQuery context -> m (Either ApiError context))
+  -> (DBCommand result -> m (Either ApiError result))
+  -> Transition input context domainError decision result output
+  -> RawRequest
+  -> m (Either ApiError RawResponse)
+executeTransition
+  mapDomainError
+  runQuery
+  runCommand
+  Transition
+    { decode = decodeRequest
+    , buildQuery = buildContextQuery
+    , decide = decideDomain
+    , buildCommand = buildDecisionCommand
+    , respond = respondWithResult
+    , encode = encodeResponse
+    }
+  rawRequest =
+    case decodeRequest rawRequest of
+      Left apiError ->
+        pure (Left apiError)
+      Right input -> do
+        contextResult <- runQuery (buildContextQuery input)
+        case contextResult of
+          Left apiError ->
+            pure (Left apiError)
+          Right context ->
+            case decideDomain context input of
+              Left domainError ->
+                pure (Left (mapDomainError domainError))
+              Right decision -> do
+                commandResult <- runCommand (buildDecisionCommand decision)
+                case commandResult of
+                  Left apiError ->
+                    pure (Left apiError)
+                  Right result ->
+                    pure
+                      ( case respondWithResult context result of
+                          Left apiError ->
+                            Left apiError
+                          Right output ->
+                            encodeResponse output
+                      )
 
 coreBoundary :: String
 coreBoundary = "arm-core"

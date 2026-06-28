@@ -100,7 +100,7 @@ Request
 
 Context
   -> Request
-  -> Either DomainError Decision
+  -> Either domainError Decision
 
 Decision
   -> DBCommand Result
@@ -176,6 +176,7 @@ For example:
 ```haskell
 data CreateTaskRequest
 data CreateTaskContext
+data CreateTaskError
 data CreateTaskDecision
 data CreateTaskResult
 data CreateTaskResponse
@@ -187,7 +188,7 @@ A pure domain decision may have a shape like:
 decideCreateTask
   :: CreateTaskContext
   -> CreateTaskRequest
-  -> Either DomainError CreateTaskDecision
+  -> Either CreateTaskError CreateTaskDecision
 ```
 
 This function does not access the database.
@@ -245,10 +246,10 @@ An endpoint can be described as a typed algebraic pipeline.
 One possible representation is:
 
 ```haskell
-data Endpoint req ctx decision result res = Endpoint
+data Endpoint req ctx domainError decision result res = Endpoint
   { decode       :: RawRequest -> Either ApiError req
   , buildQuery   :: req -> DBQuery ctx
-  , decide       :: ctx -> req -> Either DomainError decision
+  , decide       :: ctx -> req -> Either domainError decision
   , buildCommand :: decision -> DBCommand result
   , respond      :: ctx -> result -> Either ApiError res
   , encode       :: res -> RawResponse
@@ -259,13 +260,18 @@ Then a generic interpreter can execute any endpoint:
 
 ```haskell
 handle
-  :: Endpoint req ctx decision result res
+  :: (domainError -> ApiError)
+  -> Endpoint req ctx domainError decision result res
   -> RawRequest
   -> IO RawResponse
-handle endpoint raw = do
+handle mapDomainError endpoint raw = do
   req      <- liftEither $ decode endpoint raw
   ctx      <- runQuery   $ buildQuery endpoint req
-  decision <- liftEither $ decide endpoint ctx req
+  decision <-
+    liftEither $
+      case decide endpoint ctx req of
+        Left domainError -> Left (mapDomainError domainError)
+        Right decision   -> Right decision
   result   <- runCommand $ buildCommand endpoint decision
   res      <- liftEither $ respond endpoint ctx result
   pure        $ encode endpoint res
@@ -336,7 +342,7 @@ The domain decision receives this context as ordinary data.
 decide
   :: CreateTaskContext
   -> CreateTaskRequest
-  -> Either DomainError CreateTaskDecision
+  -> Either CreateTaskError CreateTaskDecision
 ```
 
 This makes the domain logic independent from the database.
@@ -351,7 +357,7 @@ Therefore ARM prefers:
 
 ```haskell
 Either ApiError a
-Either DomainError a
+Either domainError a
 ```
 
 over:
@@ -360,7 +366,16 @@ over:
 Maybe a
 ```
 
-This allows the system to distinguish between:
+`ApiError` is the framework-owned boundary error. `domainError` is supplied by
+the application, because the concrete failure algebra belongs to the domain.
+
+At the API boundary, the application provides a translation:
+
+```haskell
+domainError -> ApiError
+```
+
+This allows the boundary to distinguish between:
 
 * parse errors
 * validation errors
@@ -383,7 +398,7 @@ RawRequest -> IO RawResponse
 But the domain core is pure:
 
 ```haskell
-Context -> Request -> Either DomainError Decision
+Context -> Request -> Either domainError Decision
 ```
 
 The IO layer sequences effects.
