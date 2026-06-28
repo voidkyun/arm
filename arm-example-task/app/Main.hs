@@ -8,14 +8,24 @@ import Arm.Core
   ( ApiError (..)
   , ApiErrorKind (..)
   , DBCommand (..)
+  , DBCommandResult (..)
   , DBQuery (..)
+  , DeltaCommand (..)
   , DomainErrorBoundary
   , EndpointName (..)
   , Observation (..)
   , RawRequest (..)
   , RawResponse (..)
+  , SQLCommandMode (..)
+  , SQLParameter (..)
+  , SQLRows (..)
+  , SQLStatement (..)
   , Transition (..)
   , coreBoundary
+  , dbCommandFromDelta
+  , singleSQLRow
+  , sqlColumnInteger
+  , sqlQuery
   )
 import Arm.PostgreSQL (postgreSQLBoundary)
 import Arm.Wai
@@ -33,6 +43,17 @@ import Network.Wai.Handler.Warp
 
 data TaskDomainError
   = EmptyTaskTitle
+  deriving (Eq, Show)
+
+data CreateTaskDelta = CreateTaskDelta
+  { createTaskTitle :: String
+  , createTaskContext :: String
+  }
+  deriving (Eq, Show)
+
+newtype CreateTaskResult = CreateTaskResult
+  { createdTaskId :: Integer
+  }
   deriving (Eq, Show)
 
 main :: IO ()
@@ -62,14 +83,21 @@ openTasksObservation =
   Observation
     { name = EndpointName "open-tasks"
     , decode = const (Right ())
-    , buildQuery = const (DBQuery "load open task algebra extension")
+    , buildQuery =
+        const
+          ( sqlQuery
+              "load open task algebra extension"
+              (SQLStatement "select id, title from tasks where status = ? order by id")
+              [SQLTextParameter "open"]
+              decodeOpenTasks
+          )
     , observe = \context () ->
         Right ("open tasks observed from " <> context)
     , encode = \output ->
         Right (RawResponse output)
     }
 
-createTaskTransition :: Transition String String TaskDomainError String String String
+createTaskTransition :: Transition String String TaskDomainError CreateTaskDelta CreateTaskResult String
 createTaskTransition =
   Transition
     { name = EndpointName "create-task"
@@ -78,26 +106,69 @@ createTaskTransition =
           then Left (ApiError ApiValidationError "create-task requires a task title in the request body")
           else Right rawBody
     , buildQuery = \title ->
-        DBQuery ("load task creation context for " <> title)
+        sqlQuery
+          ("load task creation context for " <> title)
+          (SQLStatement "select ?::text as requested_title")
+          [SQLTextParameter title]
+          decodeCreateTaskContext
     , decide = \context title ->
         if null title
           then Left EmptyTaskTitle
-          else Right ("add Task with title " <> title <> " using " <> context)
-    , buildCommand = \delta ->
-        DBCommand ("apply delta: " <> delta)
+          else
+            Right
+              CreateTaskDelta
+                { createTaskTitle = title
+                , createTaskContext = context
+                }
+    , buildCommand = dbCommandFromDelta createTaskCommand
     , respond = \context result ->
-        Right ("created task through " <> result <> " after " <> context)
+        Right ("created task " <> show (createdTaskId result) <> " after " <> context)
     , encode = \output ->
         Right (RawResponse output)
     }
+
+createTaskCommand :: DeltaCommand CreateTaskDelta CreateTaskResult
+createTaskCommand =
+  DeltaCommand
+    { deltaCommandDescription = \delta ->
+        "apply CreateTaskDelta by inserting task algebra mappings for "
+          <> createTaskTitle delta
+    , deltaCommandStatement =
+        const
+          ( SQLStatement
+              "insert into tasks (title, status, creation_context) values (?, ?, ?) returning id"
+          )
+    , deltaCommandParameters = \delta ->
+        [ SQLTextParameter (createTaskTitle delta)
+        , SQLTextParameter "open"
+        , SQLTextParameter (createTaskContext delta)
+        ]
+    , deltaCommandMode = SQLCommandReturningRows
+    , deltaCommandDecodeResult = \_ result -> do
+        row <- singleSQLRow (dbCommandReturnedRows result)
+        CreateTaskResult <$> sqlColumnInteger "id" row
+    }
+
+decodeOpenTasks :: SQLRows -> Either ApiError String
+decodeOpenTasks rows =
+  Right ("open task rows: " <> show (length (unSQLRows rows)))
+
+decodeCreateTaskContext :: SQLRows -> Either ApiError String
+decodeCreateTaskContext rows =
+  Right ("task creation context rows: " <> show (length (unSQLRows rows)))
 
 runSampleQuery :: DBQuery String -> IO (Either ApiError String)
 runSampleQuery query =
   pure (Right (dbQueryDescription query <> " [sample query result]"))
 
-runSampleCommand :: DBCommand String -> IO (Either ApiError String)
+runSampleCommand :: DBCommand CreateTaskResult -> IO (Either ApiError CreateTaskResult)
 runSampleCommand command =
-  pure (Right (dbCommandDescription command <> " [sample command result]"))
+  pure
+    ( Right
+        CreateTaskResult
+          { createdTaskId = fromIntegral (length (dbCommandDescription command))
+          }
+    )
 
 taskDomainErrorToApiError :: DomainErrorBoundary TaskDomainError
 taskDomainErrorToApiError domainError =

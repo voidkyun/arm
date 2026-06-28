@@ -9,17 +9,35 @@ import Arm.Core
   ( ApiError (..),
     ApiErrorKind (..),
     DBCommand (..),
+    DBCommandPlan (..),
+    DBCommandResult (..),
     DBQuery (..),
+    DBQueryPlan (..),
+    DeltaCommand (..),
     DomainErrorBoundary,
     EndpointName (..),
     Observation (..),
     RawRequest (..),
     RawResponse (..),
+    SQLCommandMode (..),
+    SQLParameter (..),
+    SQLRow (..),
+    SQLRows (..),
+    SQLStatement (..),
+    SQLValue (..),
     Transition (..),
     ZeroDelta (..),
     coreBoundary,
+    dbCommandFromDelta,
+    describeDBCommand,
+    describeDBQuery,
     executeObservation,
     executeTransition,
+    singleSQLRow,
+    sqlColumnInteger,
+    sqlColumnText,
+    sqlCommandReturning,
+    sqlQuery,
   )
 import Data.Functor.Identity
   ( Identity (..),
@@ -84,7 +102,11 @@ tests =
           testProperty "ApiError preserves its kind and message" propApiErrorRoundTrip,
           testProperty "ZeroDelta marks an empty algebra delta" propZeroDeltaIsStable,
           testProperty "DBQuery preserves its description" propDBQueryRoundTrip,
-          testProperty "DBCommand preserves its description" propDBCommandRoundTrip
+          testProperty "DBCommand preserves its description" propDBCommandRoundTrip,
+          testProperty "SQL query plans preserve statements and parameters" propSQLQueryPlan,
+          testProperty "SQL command plans preserve returning mode" propSQLCommandPlan,
+          testProperty "Delta commands build DB commands from typed deltas" propDeltaCommandBuildsDBCommand,
+          testProperty "SQL row helpers decode typed columns" propSQLRowHelpers
         ],
       testGroup
         "Endpoint descriptions"
@@ -139,11 +161,109 @@ propZeroDeltaIsStable =
 
 propDBQueryRoundTrip :: Label -> Property
 propDBQueryRoundTrip (Label value) =
-  dbQueryDescription (DBQuery value :: DBQuery ()) === value
+  dbQueryDescription (describeDBQuery value :: DBQuery ()) === value
 
 propDBCommandRoundTrip :: Label -> Property
 propDBCommandRoundTrip (Label value) =
-  dbCommandDescription (DBCommand value :: DBCommand ()) === value
+  dbCommandDescription (describeDBCommand value :: DBCommand ()) === value
+
+propSQLQueryPlan :: Label -> Property
+propSQLQueryPlan (Label value) =
+  actual === expected
+  where
+    statement = SQLStatement ("select " <> value)
+    parameters = [SQLTextParameter value, SQLBoolParameter True]
+    query = sqlQuery "load context" statement parameters Right
+    actual =
+      case dbQueryPlan (query :: DBQuery SQLRows) of
+        SQLDBQuery
+          { dbQueryStatement = actualStatement,
+            dbQueryParameters = actualParameters,
+            dbQueryDecodeRows = decodeRows
+          } ->
+            (actualStatement, actualParameters, decodeRows (SQLRows []))
+        DescribedDBQuery ->
+          error "expected SQL query plan"
+    expected =
+      (statement, parameters, Right (SQLRows []))
+
+propSQLCommandPlan :: Label -> Property
+propSQLCommandPlan (Label value) =
+  actual === expected
+  where
+    statement = SQLStatement ("insert " <> value)
+    parameters = [SQLTextParameter value]
+    command =
+      sqlCommandReturning
+        "apply delta"
+        statement
+        parameters
+        Right
+    result = DBCommandResult 1 (SQLRows [])
+    actual =
+      case dbCommandPlan (command :: DBCommand DBCommandResult) of
+        SQLDBCommand
+          { dbCommandStatement = actualStatement,
+            dbCommandParameters = actualParameters,
+            dbCommandMode = actualMode,
+            dbCommandDecodeResult = decodeResult
+          } ->
+            (actualStatement, actualParameters, actualMode, decodeResult result)
+        DescribedDBCommand ->
+          error "expected SQL command plan"
+    expected =
+      (statement, parameters, SQLCommandReturningRows, Right result)
+
+propDeltaCommandBuildsDBCommand :: Label -> Property
+propDeltaCommandBuildsDBCommand (Label value) =
+  actual === expected
+  where
+    delta = (value, 3 :: Integer)
+    deltaCommand =
+      DeltaCommand
+        { deltaCommandDescription = \(title, _) -> "insert task " <> title,
+          deltaCommandStatement = const (SQLStatement "insert into tasks (title, rank) values (?, ?) returning id"),
+          deltaCommandParameters = \(title, rank) -> [SQLTextParameter title, SQLIntegerParameter rank],
+          deltaCommandMode = SQLCommandReturningRows,
+          deltaCommandDecodeResult = \_ commandResult -> Right commandResult
+        }
+    command = dbCommandFromDelta deltaCommand delta
+    result = DBCommandResult 1 (SQLRows [])
+    actual =
+      case dbCommandPlan (command :: DBCommand DBCommandResult) of
+        SQLDBCommand
+          { dbCommandStatement = actualStatement,
+            dbCommandParameters = actualParameters,
+            dbCommandMode = actualMode,
+            dbCommandDecodeResult = decodeResult
+          } ->
+            (dbCommandDescription command, actualStatement, actualParameters, actualMode, decodeResult result)
+        DescribedDBCommand ->
+          error "expected SQL command plan"
+    expected =
+      ( "insert task " <> value,
+        SQLStatement "insert into tasks (title, rank) values (?, ?) returning id",
+        [SQLTextParameter value, SQLIntegerParameter 3],
+        SQLCommandReturningRows,
+        Right result
+      )
+
+propSQLRowHelpers :: Label -> Property
+propSQLRowHelpers (Label value) =
+  actual === expected
+  where
+    row =
+      SQLRow
+        [ ("title", SQLTextValue value),
+          ("rank", SQLIntegerValue 3)
+        ]
+    actual = do
+      singleRow <- singleSQLRow (SQLRows [row])
+      title <- sqlColumnText "title" singleRow
+      rank <- sqlColumnInteger "rank" singleRow
+      pure (title, rank)
+    expected =
+      Right (value, 3)
 
 propObservationCarriesEndpointName :: Label -> Property
 propObservationCarriesEndpointName (Label value) =
@@ -253,7 +373,7 @@ propObservationEncodeFailure (Label value) =
       Observation
         { name = EndpointName "encode-failure",
           decode = const (Right ()),
-          buildQuery = const (DBQuery "query"),
+          buildQuery = const (describeDBQuery "query"),
           observe = \_ _ -> Right (),
           encode = const (Left expected)
         }
@@ -400,9 +520,9 @@ propTransitionEncodeFailure (Label value) =
       Transition
         { name = EndpointName "encode-failure",
           decode = const (Right ()),
-          buildQuery = const (DBQuery "query"),
+          buildQuery = const (describeDBQuery "query"),
           decide = \_ _ -> Right (),
-          buildCommand = const (DBCommand "command"),
+          buildCommand = const (describeDBCommand "command"),
           respond = \_ _ -> Right (),
           encode = const (Left expected)
         }
@@ -412,7 +532,7 @@ minimalObservation endpointName =
   Observation
     { name = endpointName,
       decode = const (Right ()),
-      buildQuery = const (DBQuery "query"),
+      buildQuery = const (describeDBQuery "query"),
       observe = \_ _ -> Right (),
       encode = const (Right (RawResponse "response"))
     }
@@ -422,9 +542,9 @@ minimalTransition endpointName =
   Transition
     { name = endpointName,
       decode = const (Right ()),
-      buildQuery = const (DBQuery "query"),
+      buildQuery = const (describeDBQuery "query"),
       decide = \_ _ -> Right (),
-      buildCommand = const (DBCommand "command"),
+      buildCommand = const (describeDBCommand "command"),
       respond = \_ _ -> Right (),
       encode = const (Right (RawResponse "response"))
     }
@@ -434,7 +554,7 @@ successfulObservation =
   Observation
     { name = EndpointName "successful-observation",
       decode = \(RawRequest rawBody) -> Right rawBody,
-      buildQuery = \input -> DBQuery (input <> "-query"),
+      buildQuery = \input -> describeDBQuery (input <> "-query"),
       observe = \context input -> Right (context <> "-" <> input),
       encode = \output -> Right (RawResponse output)
     }
@@ -444,9 +564,9 @@ successfulTransition =
   Transition
     { name = EndpointName "successful-transition",
       decode = \(RawRequest rawBody) -> Right rawBody,
-      buildQuery = \input -> DBQuery (input <> "-query"),
+      buildQuery = \input -> describeDBQuery (input <> "-query"),
       decide = \context input -> Right (context <> "-" <> input <> "-delta"),
-      buildCommand = \delta -> DBCommand (delta <> "-command"),
+      buildCommand = \delta -> describeDBCommand (delta <> "-command"),
       respond = \context result -> Right (context <> "-" <> result),
       encode = \output -> Right (RawResponse output)
     }
