@@ -1,6 +1,12 @@
 # arm
 Algebra Relational Mapping
 
+ARM maps relational data to domain algebra, not rows to objects. At the core
+algebraic level, every endpoint is a transition over the current domain algebra
+extension. A public observation is the safe zero-delta transition, while a
+public transition may produce a non-zero delta and apply it through an explicit
+interpreter.
+
 ## Design Notes
 
 - [URL Design](docs/url-design.md)

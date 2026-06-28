@@ -7,6 +7,7 @@ module Arm.Core
   , ApiErrorKind (..)
   , ApiError (..)
   , DomainErrorBoundary
+  , ZeroDelta (..)
   , DBQuery (..)
   , DBCommand (..)
   , Observation (..)
@@ -49,6 +50,10 @@ data ApiError = ApiError
 
 type DomainErrorBoundary domainError = domainError -> ApiError
 
+-- | The empty change to a domain algebra extension.
+data ZeroDelta = ZeroDelta
+  deriving (Eq, Ord, Show)
+
 newtype DBQuery a = DBQuery
   { dbQueryDescription :: String
   }
@@ -59,6 +64,7 @@ newtype DBCommand a = DBCommand
   }
   deriving (Eq, Ord, Show)
 
+-- | A safe zero-delta transition exposed without write authority.
 data Observation input context domainError output = Observation
   { name :: EndpointName
   , decode :: RawRequest -> Either ApiError input
@@ -67,12 +73,13 @@ data Observation input context domainError output = Observation
   , encode :: output -> Either ApiError RawResponse
   }
 
-data Transition input context domainError decision result output = Transition
+-- | A transition that decides a typed delta and interprets it as a command.
+data Transition input context domainError delta result output = Transition
   { name :: EndpointName
   , decode :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
-  , decide :: context -> input -> Either domainError decision
-  , buildCommand :: decision -> DBCommand result
+  , decide :: context -> input -> Either domainError delta
+  , buildCommand :: delta -> DBCommand result
   , respond :: context -> result -> Either ApiError output
   , encode :: output -> Either ApiError RawResponse
   }
@@ -116,7 +123,7 @@ executeTransition
   => DomainErrorBoundary domainError
   -> (DBQuery context -> m (Either ApiError context))
   -> (DBCommand result -> m (Either ApiError result))
-  -> Transition input context domainError decision result output
+  -> Transition input context domainError delta result output
   -> RawRequest
   -> m (Either ApiError RawResponse)
 executeTransition
@@ -127,7 +134,7 @@ executeTransition
     { decode = decodeRequest
     , buildQuery = buildContextQuery
     , decide = decideDomain
-    , buildCommand = buildDecisionCommand
+    , buildCommand = buildDeltaCommand
     , respond = respondWithResult
     , encode = encodeResponse
     }
@@ -144,8 +151,8 @@ executeTransition
             case decideDomain context input of
               Left domainError ->
                 pure (Left (mapDomainError domainError))
-              Right decision -> do
-                commandResult <- runCommand (buildDecisionCommand decision)
+              Right delta -> do
+                commandResult <- runCommand (buildDeltaCommand delta)
                 case commandResult of
                   Left apiError ->
                     pure (Left apiError)

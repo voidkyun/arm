@@ -14,11 +14,15 @@ Map relational data to domain algebra, not rows to objects.
 The first usable version of ARM should make it possible to define backend API
 endpoints as named observations and transitions over a domain algebra.
 
+At the core algebraic level, every endpoint is a transition over the current
+domain algebra extension. A public observation is the safe special case whose
+delta is zero.
+
 The framework should separate:
 
 1. HTTP decoding and encoding.
 2. SQL-backed context loading.
-3. Pure domain decisions.
+3. Pure domain delta decisions.
 4. SQL command construction and execution.
 5. Response construction.
 
@@ -27,27 +31,53 @@ can read and write a real PostgreSQL database.
 
 ## Core Abstractions
 
-The MVP should center on two endpoint kinds:
+The MVP should center on one core algebraic endpoint abstraction:
 
 ```haskell
-data Observation input context domainError output
-data Transition input context domainError decision result output
-```
-
-An observation represents:
-
-```text
-input -> SQL query -> context -> pure observation -> output
+data Transition input context domainError delta result output
 ```
 
 A transition represents:
 
 ```text
-input -> SQL query -> context -> pure decision -> SQL command -> result -> output
+input -> SQL query -> context -> pure delta decision -> SQL command -> result -> output
 ```
 
-The earlier generic endpoint shape remains useful, but in the MVP it should be
-split semantically:
+The `delta` is a typed description of the intended change to the domain algebra
+extension. For example, a task creation transition does not merely construct a
+`Task` object. It decides a well-formed algebra delta such as:
+
+```text
++ Task(t)
++ title(t)     = input.title
++ project(t)   = input.project
++ status(t)    = Open
++ createdBy(t) = actor
++ createdAt(t) = now
++ assignee(t)  = input.assignee, when present
+```
+
+SQL execution is an interpreter for that delta. The relational schema stores the
+extension of the algebra; it is not treated as object persistence.
+
+Public ARM APIs still expose two semantic endpoint kinds:
+
+```haskell
+data Observation input context domainError output
+data Transition input context domainError delta result output
+```
+
+An observation represents:
+
+```text
+input -> SQL query -> context -> zero-delta observation -> output
+```
+
+An observation is a transition whose delta is zero. The observation API is
+separate because it must not expose write authority or require a command
+interpreter.
+
+The MVP shape is:
 
 ```haskell
 data Observation input context domainError output = Observation
@@ -55,17 +85,17 @@ data Observation input context domainError output = Observation
   , decode     :: RawRequest -> Either ApiError input
   , buildQuery :: input -> DBQuery context
   , observe    :: context -> input -> Either domainError output
-  , encode     :: output -> RawResponse
+  , encode     :: output -> Either ApiError RawResponse
   }
 
-data Transition input context domainError decision result output = Transition
+data Transition input context domainError delta result output = Transition
   { name         :: EndpointName
   , decode       :: RawRequest -> Either ApiError input
   , buildQuery   :: input -> DBQuery context
-  , decide       :: context -> input -> Either domainError decision
-  , buildCommand :: decision -> DBCommand result
+  , decide       :: context -> input -> Either domainError delta
+  , buildCommand :: delta -> DBCommand result
   , respond      :: context -> result -> Either ApiError output
-  , encode       :: output -> RawResponse
+  , encode       :: output -> Either ApiError RawResponse
   }
 ```
 
@@ -112,7 +142,7 @@ The initial SQL design should provide:
 4. Parameterized SQL usage.
 5. Structured error handling at the API boundary.
 
-Domain decision functions must not run SQL directly.
+Domain delta decision functions must not run SQL directly.
 
 ## Sample Application
 
@@ -143,8 +173,8 @@ The sample should be complex enough to demonstrate:
 2. Mappings, such as task owner, assignee, project, and status.
 3. Constraints, such as valid status transitions.
 4. SQL-backed context loading.
-5. Pure domain decisions.
-6. SQL-backed state changes.
+5. Pure domain delta decisions.
+6. SQL-backed application of well-formed algebra deltas.
 
 ## Out Of Scope
 
@@ -166,20 +196,23 @@ These can be revisited after the core ARM model is working.
 
 The MVP is successful when:
 
-1. A Haskell library exposes the core ARM endpoint abstractions.
+1. A Haskell library exposes the core ARM transition abstraction and the
+   zero-delta observation wrapper.
 2. A WAI/Warp adapter can serve ARM endpoints over HTTP.
 3. A PostgreSQL interpreter can execute `DBQuery` and `DBCommand`.
 4. The sample task API can be run locally.
 5. HTTP clients can call observation and transition URLs.
-6. At least one transition performs a real SQL read, pure domain decision, and
+6. At least one transition performs a real SQL read, pure delta decision, and
    real SQL write.
-7. Domain decision functions can be unit-tested without HTTP or database IO.
+7. Domain delta decision functions can be unit-tested without HTTP or database
+   IO.
 8. The README explains why ARM endpoints are named observations and transitions,
    not object resources.
 
 ## MVP Statement
 
 ARM MVP is a Haskell library for defining Web API endpoints as typed algebraic
-pipelines, where public URLs name domain observations and transitions, WAI/Warp
-provides real HTTP execution, PostgreSQL provides real SQL execution, and pure
-domain decisions remain separated from effectful interpreters.
+pipelines, where every endpoint is modeled as a transition over a domain algebra
+extension, public URLs name observations and transitions, WAI/Warp provides real
+HTTP execution, PostgreSQL provides real SQL execution, and pure delta decisions
+remain separated from effectful interpreters.
