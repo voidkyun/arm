@@ -20,6 +20,9 @@ jobs:
           ghc-version: "9.10.3"
           cabal-version: "latest"
 
+      - name: Install PostgreSQL client libraries
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+
       - name: Update package index
         run: cabal update
 

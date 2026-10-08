@@ -11,6 +11,7 @@ interpreter.
 
 - [URL Design](docs/url-design.md)
 - [MVP Scope](docs/mvp-scope.md)
+- [Library and Example Boundary](docs/library-example-boundary.md)
 
 ## Package Boundaries
 

@@ -16,6 +16,8 @@ import Arm.Core
   , RawRequest (..)
   , RawResponse (..)
   , Transition (..)
+  , describeDBCommand
+  , describeDBQuery
   )
 import Arm.Wai
   ( armApplication
@@ -182,7 +184,7 @@ openTasksObservation =
   Observation
     { name = EndpointName "open-tasks"
     , decode = \(RawRequest rawBody) -> Right rawBody
-    , buildQuery = \input -> DBQuery ("open-tasks:" <> input)
+    , buildQuery = \input -> describeDBQuery ("open-tasks:" <> input)
     , observe = \context input -> Right (context <> ":" <> input)
     , encode = \output -> Right (RawResponse output)
     }
@@ -192,12 +194,12 @@ createTaskTransition =
   Transition
     { name = EndpointName "create-task"
     , decode = \(RawRequest rawBody) -> Right rawBody
-    , buildQuery = \input -> DBQuery ("create-task:" <> input)
+    , buildQuery = \input -> describeDBQuery ("create-task:" <> input)
     , decide = \context input ->
         if input == "duplicate"
           then Left (DuplicateTask input)
           else Right (context <> ":" <> input <> ":delta")
-    , buildCommand = \delta -> DBCommand (delta <> ":command")
+    , buildCommand = \delta -> describeDBCommand (delta <> ":command")
     , respond = \context result -> Right (context <> ":" <> result)
     , encode = \output -> Right (RawResponse output)
     }

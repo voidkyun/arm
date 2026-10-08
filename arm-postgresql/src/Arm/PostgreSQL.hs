@@ -1,8 +1,9 @@
 module Arm.PostgreSQL
   ( postgreSQLBoundary
+  , runPostgreSQLQuery
+  , runPostgreSQLCommand
+  , runPostgreSQLQueryWithPool
+  , runPostgreSQLCommandWithPool
   ) where
 
-import Arm.Core (coreBoundary)
-
-postgreSQLBoundary :: String
-postgreSQLBoundary = coreBoundary ++ "/arm-postgresql"
+import Arm.PostgreSQL.Internal
