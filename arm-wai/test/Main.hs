@@ -22,6 +22,7 @@ import Arm.Core
 import Arm.Wai
   ( armApplication
   , observationRoute
+  , observationRouteWith
   , transitionRoute
   , waiBoundary
   )
@@ -31,6 +32,8 @@ import Data.ByteString.Builder
   )
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
 import Data.IORef
   ( IORef
   , atomicModifyIORef'
@@ -45,6 +48,7 @@ import Network.HTTP.Types
   , methodGet
   , methodPost
   , status200
+  , status400
   , status404
   , status405
   , status409
@@ -56,6 +60,7 @@ import Network.Wai
   , rawPathInfo
   , requestMethod
   , setRequestBodyChunks
+  , responseLBS
   )
 import Network.Wai.Internal
   ( Response (..)
@@ -96,11 +101,42 @@ tests =
     , testCase "Unknown operation names return 404" testUnknownRoute
     , testCase "Known operation names with the wrong method return 405" testWrongMethod
     , testCase "API errors are converted to HTTP statuses" testApiErrorStatus
+    , testCase "Default codec round trips UTF-8" testUnicode
+    , testCase "Invalid UTF-8 fails before query execution" testInvalidUnicode
+    , testCase "Custom codec failures do not execute queries" testCustomCodecFailure
     ]
 
 testWaiBoundary :: Assertion
 testWaiBoundary =
   assertEqual "boundary" "arm-core/arm-wai" waiBoundary
+
+testUnicode :: Assertion
+testUnicode = do
+  let bytes = LazyByteString.fromStrict (Text.encodeUtf8 (Text.pack "日本語"))
+  response <- runApplication sampleApplication methodGet "/open-tasks" bytes
+  assertEqual "status" status200 (capturedStatus response)
+  assertEqual "body" (Text.pack "open-tasks:日本語:context:日本語")
+    (Text.decodeUtf8 (LazyByteString.toStrict (capturedBody response)))
+
+testInvalidUnicode :: Assertion
+testInvalidUnicode = do
+  count <- newIORef (0 :: Int)
+  let application = armApplication [observationRoute taskDomainErrorToApiError (countingQuery count) openTasksObservation]
+  response <- runApplication application methodGet "/open-tasks" (LazyByteString.pack [255])
+  assertEqual "status" status400 (capturedStatus response)
+  assertEqual "queries" 0 =<< readIORef count
+
+testCustomCodecFailure :: Assertion
+testCustomCodecFailure = do
+  count <- newIORef (0 :: Int)
+  let readRequest _ = pure (Left (ApiError ApiParseError "bad query"))
+      renderResult result = case result of
+        Left _ -> responseLBS status400 [] "custom error"
+        Right _ -> responseLBS status200 [] "unexpected"
+      application = armApplication [observationRouteWith readRequest renderResult taskDomainErrorToApiError (countingQuery count) openTasksObservation]
+  response <- runApplication application methodGet "/open-tasks" ""
+  assertEqual "custom renderer" "custom error" (capturedBody response)
+  assertEqual "queries" 0 =<< readIORef count
 
 testObservationRoute :: Assertion
 testObservationRoute = do
