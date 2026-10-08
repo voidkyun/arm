@@ -5,7 +5,10 @@ module Arm.Wai
   ( WaiRoute
   , armApplication
   , observationRoute
+  , observationRouteWith
   , transitionRoute
+  , transitionRouteWith
+  , apiErrorStatus
   , waiBoundary
   ) where
 
@@ -27,6 +30,8 @@ import Arm.Core
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteString.Char8
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
 import Data.List
   ( find
   )
@@ -76,14 +81,26 @@ observationRoute
   -> (DBQuery context -> IO (Either ApiError context))
   -> Observation input context domainError output
   -> WaiRoute
-observationRoute mapDomainError runQuery observation@Observation {name = endpointName} =
+observationRoute mapDomainError runQuery observation =
+  observationRouteWith waiRawRequest apiResultResponse mapDomainError runQuery observation
+
+-- | Application-owned request and response codecs, without domain or JSON
+-- dependencies in the adapter. No command interpreter is accepted.
+observationRouteWith
+  :: (Request -> IO (Either ApiError RawRequest))
+  -> (Either ApiError RawResponse -> Response)
+  -> DomainErrorBoundary domainError
+  -> (DBQuery context -> IO (Either ApiError context))
+  -> Observation input context domainError output
+  -> WaiRoute
+observationRouteWith readRequest renderResult mapDomainError runQuery observation@Observation {name = endpointName} =
   WaiRoute
     { routeMethod = methodGet
     , routeName = endpointName
     , routeApplication = \request respond -> do
-        rawRequest <- waiRawRequest request
-        result <- executeObservation mapDomainError runQuery observation rawRequest
-        respond (apiResultResponse result)
+        rawRequest <- readRequest request
+        result <- either (pure . Left) (executeObservation mapDomainError runQuery observation) rawRequest
+        respond (renderResult result)
     }
 
 transitionRoute
@@ -92,14 +109,25 @@ transitionRoute
   -> (DBCommand result -> IO (Either ApiError result))
   -> Transition input context domainError delta result output
   -> WaiRoute
-transitionRoute mapDomainError runQuery runCommand transition@Transition {name = endpointName} =
+transitionRoute mapDomainError runQuery runCommand transition =
+  transitionRouteWith waiRawRequest apiResultResponse mapDomainError runQuery runCommand transition
+
+transitionRouteWith
+  :: (Request -> IO (Either ApiError RawRequest))
+  -> (Either ApiError RawResponse -> Response)
+  -> DomainErrorBoundary domainError
+  -> (DBQuery context -> IO (Either ApiError context))
+  -> (DBCommand result -> IO (Either ApiError result))
+  -> Transition input context domainError delta result output
+  -> WaiRoute
+transitionRouteWith readRequest renderResult mapDomainError runQuery runCommand transition@Transition {name = endpointName} =
   WaiRoute
     { routeMethod = methodPost
     , routeName = endpointName
     , routeApplication = \request respond -> do
-        rawRequest <- waiRawRequest request
-        result <- executeTransition mapDomainError runQuery runCommand transition rawRequest
-        respond (apiResultResponse result)
+        rawRequest <- readRequest request
+        result <- either (pure . Left) (executeTransition mapDomainError runQuery runCommand transition) rawRequest
+        respond (renderResult result)
     }
 
 waiBoundary :: String
@@ -118,9 +146,13 @@ routePath :: EndpointName -> ByteString.ByteString
 routePath (EndpointName endpointName) =
   ByteString.Char8.pack ('/' : dropWhile (== '/') endpointName)
 
-waiRawRequest :: Request -> IO RawRequest
+waiRawRequest :: Request -> IO (Either ApiError RawRequest)
 waiRawRequest request =
-  RawRequest . LazyByteString.Char8.unpack <$> strictRequestBody request
+  do
+    bytes <- strictRequestBody request
+    pure $ case Text.decodeUtf8' (ByteString.concat (LazyByteString.Char8.toChunks bytes)) of
+      Left _ -> Left (ApiError ApiParseError "request body must be UTF-8")
+      Right body -> Right (RawRequest (Text.unpack body))
 
 apiResultResponse :: Either ApiError RawResponse -> Response
 apiResultResponse result =
@@ -161,4 +193,4 @@ textResponse status body =
   responseLBS
     status
     [(hContentType, "text/plain; charset=utf-8")]
-    (LazyByteString.Char8.pack body)
+    (LazyByteString.Char8.fromStrict (Text.encodeUtf8 (Text.pack body)))

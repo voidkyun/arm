@@ -19,6 +19,7 @@ library
       base >=4.18 && <5,
       bytestring >=0.12 && <0.13,
       http-types >=0.12 && <0.13,
+      text >=2.0 && <2.2,
       wai >=3.2 && <3.3
   default-language: GHC2021
   ghc-options: -Wall
@@ -36,6 +37,7 @@ test-suite arm-wai-test
       http-types >=0.12 && <0.13,
       tasty >=1.5 && <1.6,
       tasty-hunit >=0.10 && <0.11,
+      text >=2.0 && <2.2,
       wai >=3.2 && <3.3
   default-language: GHC2021
   ghc-options: -Wall

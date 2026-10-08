@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: arm
+      POSTGRES_PASSWORD: arm-local
+      POSTGRES_DB: arm_task
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - arm-task-data:/var/lib/postgresql/data
+      - ./arm-example-task/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arm -d arm_task"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+volumes:
+  arm-task-data:

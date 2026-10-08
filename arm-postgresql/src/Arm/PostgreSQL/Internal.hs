@@ -50,6 +50,7 @@ import qualified Data.Text as Text
 import Database.PostgreSQL.Simple
   ( Connection
   , Only (..)
+  , SqlError (..)
   , execute
   , query
   )
@@ -279,7 +280,10 @@ interpreterResult prefix action = do
 
 interpreterException :: String -> SomeException -> ApiError
 interpreterException prefix exception =
-  interpreterError (prefix <> ": " <> show exception)
+  case fromException exception :: Maybe SqlError of
+    Just sqlError | ByteString.take 2 (sqlState sqlError) `elem` [Text.Encoding.encodeUtf8 (Text.pack "23"), Text.Encoding.encodeUtf8 (Text.pack "40")] ->
+      ApiError ApiConflictError "database constraint or concurrent update rejected the command"
+    _ -> interpreterError prefix
 
 interpreterError :: String -> ApiError
 interpreterError message =
