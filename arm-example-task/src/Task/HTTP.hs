@@ -91,14 +91,16 @@ positiveId o key = do
   value <- o .: key
   if validId value then pure value else fail (Key.toString key <> " must fit a positive PostgreSQL bigint")
 optionalAssignee :: Object -> Key -> Parser (Maybe UserId)
-optionalAssignee o key = do
+optionalAssignee o key = fmap UserId <$> optionalId o key
+optionalProject :: Object -> Key -> Parser (Maybe ProjectId)
+optionalProject o key = fmap ProjectId <$> optionalId o key
+optionalId :: Object -> Key -> Parser (Maybe Integer)
+optionalId o key = do
   value <- o .:? key
   case value of
     Nothing -> pure Nothing
-    Just number | validId number -> pure (Just (UserId number))
+    Just number | validId number -> pure (Just number)
                 | otherwise -> fail (Key.toString key <> " must be a positive integer")
-optionalProject :: Object -> Key -> Parser (Maybe ProjectId)
-optionalProject o key = fmap (ProjectId . unUserId) <$> optionalAssignee o key
 onlyKeys :: [Key] -> Object -> Parser ()
 onlyKeys allowed o
   | all (`elem` allowed) (KeyMap.keys o) = pure ()
@@ -153,7 +155,7 @@ jsonResponse result = case result of
 
 domainErrorBoundary :: DomainErrorBoundary DomainError
 domainErrorBoundary err = case err of
-  InvalidTitle -> ApiError ApiValidationError "title must contain 1 to 200 non-padding characters"
+  InvalidTitle -> ApiError ApiValidationError "title must contain 1 to 200 non-padding characters and no NUL"
   ProjectMissing -> ApiError ApiNotFoundError "project does not exist"
   UserMissing -> ApiError ApiNotFoundError "user does not exist"
   TaskMissing -> ApiError ApiNotFoundError "task does not exist"

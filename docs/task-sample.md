@@ -35,7 +35,8 @@ three users, two open tasks and one closed task.
 
 Unknown POST fields are rejected. Assigning the current assignee is a conflict;
 explicit null unassigns. Creation trims outer whitespace and accepts titles of
-1–200 characters. A missing project/user/task yields 404, invalid input or
+1–200 characters, excluding NUL (which PostgreSQL text cannot represent).
+A missing project/user/task yields 404, invalid input or
 membership yields 400, and closed tasks or stale context yield 409. Existing
 empty projects/users produce empty projections, not missing-entity errors.
 

@@ -57,7 +57,7 @@ data AssignTaskDelta = AssignTaskDelta
 
 decideCreateTaskDelta :: CreateTaskContext -> CreateTaskInput -> Either DomainError CreateTaskDelta
 decideCreateTaskDelta context input
-  | null trimmed || length trimmed > 200 = Left InvalidTitle
+  | null trimmed || length trimmed > 200 || '\0' `elem` trimmed = Left InvalidTitle
   | not (creationProjectExists context) = Left ProjectMissing
   | not (creationActorExists context) = Left UserMissing
   | Set.notMember (actorArgument input) (creationMembers context) = Left ActorNotMember

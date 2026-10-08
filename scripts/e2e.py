@@ -79,6 +79,7 @@ def main():
     for body in (
         {'title': '  ', 'projectId': 1, 'actorId': 1},
         {'title': 'x' * 201, 'projectId': 1, 'actorId': 1},
+        {'title': 'review\x00task', 'projectId': 1, 'actorId': 1},
         {'title': 'x', 'projectId': 1, 'actorId': 3},
         {'title': 'x', 'projectId': 1, 'actorId': 1, 'assigneeId': 3},
         {'title': 'x', 'projectId': 1, 'actorId': 1, 'status': 'closed'},

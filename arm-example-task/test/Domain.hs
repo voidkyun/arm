@@ -17,6 +17,7 @@ tests = testGroup "pure task algebra"
       fmap addAssignee (decideCreateTaskDelta creation (input {assigneeArgument = Nothing})) @?= Right Nothing
   , testCase "empty title" $ decideCreateTaskDelta creation (input {titleArgument = " \n\t "}) @?= Left InvalidTitle
   , testCase "overlong title" $ decideCreateTaskDelta creation (input {titleArgument = replicate 201 'x'}) @?= Left InvalidTitle
+  , testCase "PostgreSQL text cannot represent embedded NUL" $ decideCreateTaskDelta creation (input {titleArgument = "review\0task"}) @?= Left InvalidTitle
   , testCase "maximum title" $ fmap (length . addTitle) (decideCreateTaskDelta creation (input {titleArgument = replicate 200 'x'})) @?= Right 200
   , testCase "missing project" $ decideCreateTaskDelta (creation {creationProjectExists = False}) input @?= Left ProjectMissing
   , testCase "missing creator" $ decideCreateTaskDelta (creation {creationActorExists = False}) input @?= Left UserMissing

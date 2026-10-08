@@ -32,7 +32,7 @@ cluster, seeds it, starts real Warp servers and stops only its own processes.
    context, then directly checks its persisted title/project/status/creator/
    time/assignee mappings; assigns/unassigns and closes it with subsequent GETs.
 7. **Pure unit tests:** domain sublibrary has no HTTP, ARM or PostgreSQL
-   dependency; 27 tests include two QuickCheck properties (100 cases each).
+   dependency; 28 tests include two QuickCheck properties (100 cases each).
 8. **README URL rationale:** named operations, zero-delta observations, typed
    delta interpretation, external arguments and MVP boundaries are explained.
 
