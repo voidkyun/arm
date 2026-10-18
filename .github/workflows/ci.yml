@@ -2,32 +2,88 @@ name: CI
 
 on:
   push:
-    branches:
-      - "**"
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_validation:
+        description: Build every package/executable (slow); real SQL/HTTP uses scripts/e2e.sh
+        type: boolean
+        default: false
+        required: false
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.full_validation && 'full' || 'fast' }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: cabal test
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      heavy: ${{ steps.changes.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/ci_changes.py --base "$BASE" --head "$HEAD" --pull-request
+          else
+            python3 scripts/ci_changes.py --force
+          fi
+      - run: python3 -m unittest discover -s scripts -p 'test_ci_*.py' -v
 
+  validation:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Haskell
+        id: haskell
         uses: haskell-actions/setup@v2
         with:
           ghc-version: "9.10.3"
           cabal-version: "latest"
-
+          cabal-update: false
       - name: Install PostgreSQL client libraries
         run: sudo apt-get update && sudo apt-get install -y libpq-dev
-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.haskell.outputs.cabal-store }}
+            dist-newstyle
+          key: cabal-${{ runner.os }}-${{ steps.haskell.outputs.ghc-version }}-${{ steps.haskell.outputs.cabal-version }}-${{ hashFiles('cabal.project*', '**/*.cabal') }}-${{ github.sha }}
+          restore-keys: |
+            cabal-${{ runner.os }}-${{ steps.haskell.outputs.ghc-version }}-${{ steps.haskell.outputs.cabal-version }}-${{ hashFiles('cabal.project*', '**/*.cabal') }}-
       - name: Update package index
         run: cabal update
-
       - name: Build all packages
+        if: github.event_name == 'workflow_dispatch' && inputs.full_validation
         run: cabal build all
-
       - name: Run all tests
-        run: cabal test all
+        run: cabal test all --test-show-details=direct
+
+  test:
+    name: cabal test
+    needs: [changes, validation]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+          VALIDATION: ${{ needs.validation.result }}
+        run: |
+          test "$CHANGES" = success
+          if [ "$HEAVY" = true ]; then
+            test "$VALIDATION" = success
+          else
+            test "$HEAVY" = false && test "$VALIDATION" = skipped
+          fi
