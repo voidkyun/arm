@@ -206,8 +206,8 @@ The MVP is successful when:
    real SQL write.
 7. Domain delta decision functions can be unit-tested without HTTP or database
    IO.
-8. The README explains why ARM endpoints are named observations and transitions,
-   not object resources.
+8. The README links to documentation explaining why ARM endpoints name
+   observations and transitions over the domain algebra.
 
 ## MVP Statement
 

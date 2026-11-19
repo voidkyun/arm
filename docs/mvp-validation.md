@@ -1,8 +1,24 @@
 # MVP Validation Map
 
-Run `cabal build all`, `cabal test all`, then `bash scripts/e2e.sh` with
-PostgreSQL server/client binaries installed. The E2E script creates an isolated
-cluster, seeds it, starts real Warp servers and stops only its own processes.
+## Run the end-to-end checks
+
+From the repository root, use Python 3 and PostgreSQL 14+ server/client binaries
+(`sudo apt-get install postgresql libpq-dev` on Ubuntu).
+
+```sh
+cabal build all -j2
+cabal test all -j2
+ARM_E2E_LOG_DIR=/tmp/arm-e2e-logs bash scripts/e2e.sh
+```
+
+The script creates and stops its own temporary PostgreSQL cluster and two Warp
+processes. It verifies all endpoints, actual persisted changes, query-only
+observations on a database read-only connection, structured failures, Unicode,
+parameter binding, stale deltas and concurrent closes. It leaves its fixture
+and logs for inspection. Override `PG_BIN` if server binaries are outside
+`pg_config --bindir`; `PG_SHARE` is available for an unpacked distribution.
+Ports default to 55439 (DB), 18089 (HTTP) and 18090 (read-only HTTP); override
+`ARM_TEST_PG_PORT`, `ARM_TEST_HTTP_PORT`, `ARM_TEST_READONLY_PORT` if occupied.
 
 ## Issues and Acceptance Evidence
 
@@ -33,8 +49,9 @@ cluster, seeds it, starts real Warp servers and stops only its own processes.
    time/assignee mappings; assigns/unassigns and closes it with subsequent GETs.
 7. **Pure unit tests:** domain sublibrary has no HTTP, ARM or PostgreSQL
    dependency; 28 tests include two QuickCheck properties (100 cases each).
-8. **README URL rationale:** named operations, zero-delta observations, typed
-   delta interpretation, external arguments and MVP boundaries are explained.
+8. **Endpoint rationale:** [URL design](url-design.md) explains named operations
+   and external inputs. The [task walkthrough](task-sample.md) traces a typed
+   delta through SQL, and [MVP scope](mvp-scope.md) defines the boundaries.
 
 ## Additional Regression Evidence
 

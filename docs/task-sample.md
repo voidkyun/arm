@@ -42,6 +42,12 @@ empty projects/users produce empty projections, not missing-entity errors.
 
 ## Follow a Real Creation
 
+```text
+HTTP JSON -> input -> DBQuery -> PostgreSQL SELECT -> typed Context
+          -> pure delta decision -> DeltaCommand -> DBCommand
+          -> PostgreSQL INSERT/UPDATE -> Result -> JSON -> HTTP
+```
+
 1. `Task.HTTP.createTask` is a `Transition CreateTaskInput CreateTaskContext
    DomainError CreateTaskDelta CreateTaskResult CreateTaskResult`.
 2. Its decoder accepts external arguments only. Caller-supplied status, id,
@@ -94,8 +100,10 @@ and failed pool resources are discarded by existing interpreter tests.
 
 ## Review Order
 
-Read the domain types and decisions first, then the six endpoint descriptions,
-then the concrete SQL mappings and finally the thin server. Run the commands
-in the README and inspect `scripts/e2e.py` for externally observable behavior.
+Read the [pure domain decisions](../arm-example-task/domain/Task/Domain.hs),
+then the [six endpoint pipelines](../arm-example-task/src/Task/HTTP.hs),
+the [SQL mappings](../arm-example-task/src/Task/SQL.hs) and the
+[server assembly](../arm-example-task/app/Main.hs). Try the
+[example requests](task-api.md) or run the [end-to-end checks](mvp-validation.md).
 `test/Domain.hs` uses only in-memory context and the pure domain sublibrary;
 `test/Integration.hs` verifies real PostgreSQL execution and stale commands.
