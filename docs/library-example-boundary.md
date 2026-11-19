@@ -72,7 +72,8 @@ should contain:
 
 ### Domain Algebra
 
-The task example owns all task-specific domain types and pure decisions. It
+The `arm-example-task` domain sublibrary depends only on `base` and
+`containers`. It owns all task-specific domain types and pure decisions. It
 should contain:
 
 - Task-specific input, context, delta, result, response, and error types.
